@@ -2,6 +2,7 @@
 Batch web-LLM orchestrator using LangGraph batching with per-query NVTX markers.
 Accepts multiple queries as CLI args, runs the full tool chain in a single batched graph invocation, and marks each node per query.
 """
+import json
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os, math
@@ -11,6 +12,7 @@ from typing import List, Dict, Optional
 import nvtx
 import requests
 from bs4 import BeautifulSoup
+from tavily import TavilyClient
 from sumy.parsers.plaintext import PlaintextParser
 from sumy.nlp.tokenizers import Tokenizer
 from sumy.summarizers.lex_rank import LexRankSummarizer
@@ -25,6 +27,10 @@ from collections import defaultdict
  
 # Global timing storage for statistics
 timing_stats = defaultdict(list)
+
+# Per-query trace: list of dicts, one per query, keyed by stage
+query_traces: List[Dict[str, float]] = []
+_trace_lock = __import__('threading').Lock()
  
 # 1) Shared state schema
 typedef = TypedDict  # compatibility alias
@@ -45,21 +51,32 @@ def web_search(state: GraphState) -> GraphState:
     start_time = timeit.default_timer()
 
     if state['skip_web_search'] == False:
-        key, cx = os.getenv('GOOGLE_API_KEY'), os.getenv('GOOGLE_CX')
-        if not key or not cx:
-            nvtx.pop_range(); raise RuntimeError('Missing GOOGLE_API_KEY or GOOGLE_CX')
-        params = {'key': key, 'cx': cx, 'q': state['query'], 'num': 10}
-        resp = requests.get('https://www.googleapis.com/customsearch/v1', params=params, timeout=10)
-        resp.raise_for_status()
-        items = resp.json().get('items', [])
-        urls = [i['link'] for i in items if 'link' in i]
+        api_key = os.getenv('TAVILY_API_KEY')
+        if not api_key:
+            nvtx.pop_range(); raise RuntimeError('Missing TAVILY_API_KEY')
+        client = TavilyClient(api_key=api_key)
+        for attempt in range(3):
+            try:
+                response = client.search(state['query'], max_results=10)
+                break
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+                else:
+                    raise
+        urls = [r['url'] for r in response.get('results', []) if 'url' in r]
     else:
         urls = ['https://en.wikipedia.org/wiki/Spiel_des_Jahres', 'https://boardgamegeek.com/wiki/page/Spiel_des_Jahres', 'https://www.reddit.com/r/boardgames/comments/buwap5/are_previous_spiel_des_jahres_winners_now_too/', 'https://boardgamegeek.com/thread/3282083/spiel-des-jahres-winners-1979-to-2023-and-who-do-y', 'https://blog.recommend.games/posts/thoughts-on-spiel-des-jahres/', 'https://www.spiel-des-jahres.de/en/award-winners-2024/', 'https://www.facebook.com/groups/132851767828/posts/10162746926537829/', 'https://www.tabletopgaming.co.uk/news/spiel-des-jahres-2024-winners-announced/', 'https://therewillbe.games/board-game-lists-and-guides/6214-the-ten-greatest-spiel-des-jahres-winners', 'https://www.dicebreaker.com/topics/spiel-des-jahres/best-games/overlooked-spiel-des-jahres-winners']
  
 
     elapsed = timeit.default_timer() - start_time
     timing_stats['web_search'].append(elapsed)
-    # print(f"[TIMING] {marker}: {elapsed:.4f}s")
+    with _trace_lock:
+        idx = len(timing_stats['web_search']) - 1
+        while len(query_traces) <= idx:
+            query_traces.append({})
+        query_traces[idx]['query_idx'] = idx
+        query_traces[idx]['web_search'] = round(elapsed, 6)
     nvtx.pop_range()
     return {'urls': urls}
  
@@ -92,7 +109,10 @@ def _fetch_url_single_state(state: GraphState) -> GraphState:
  
     elapsed = timeit.default_timer() - start_time
     timing_stats['fetch_url'].append(elapsed)
-    # print(f"[TIMING] {marker}: {elapsed:.4f}s")
+    with _trace_lock:
+        idx = len(timing_stats['fetch_url']) - 1
+        if idx < len(query_traces):
+            query_traces[idx]['fetch_url'] = round(elapsed, 6)
     nvtx.pop_range()
     return {"page_texts": texts}
  
@@ -101,7 +121,7 @@ def fetch_url(state_or_states):  # LangGraph will pass list when batching
     """Batched wrapper: handles either a single state or a list of states."""
     if isinstance(state_or_states, list):
         # Parallelise across *queries* with a process pool
-        max_workers = min(len(state_or_states), 1)
+        max_workers = len(state_or_states)
         with ProcessPoolExecutor(max_workers=max_workers) as pool:
             results = list(pool.map(_fetch_url_single_state, state_or_states))
         return results
@@ -126,14 +146,17 @@ def summarize(state: GraphState) -> GraphState:
     nvtx.push_range(marker)
     start_time = timeit.default_timer() 
  
-    max_workers = min(len(state["page_texts"]), 1)
+    max_workers = len(state["page_texts"])
     with ProcessPoolExecutor(max_workers=max_workers) as pool:
         sums = list(pool.map(_lexrank_one, state["page_texts"]))
  
  
     elapsed = timeit.default_timer() - start_time
     timing_stats['summarize'].append(elapsed)
-    # print(f"[TIMING] {marker}: {elapsed:.4f}s")
+    with _trace_lock:
+        idx = len(timing_stats['summarize']) - 1
+        if idx < len(query_traces):
+            query_traces[idx]['summarize'] = round(elapsed, 6)
     nvtx.pop_range()
     return {"summaries": sums}
 
@@ -154,7 +177,13 @@ def final_answer(state: GraphState) -> GraphState:
     answer = llm.invoke([prompt])
     elapsed = timeit.default_timer() - start_time
     timing_stats['llm_inference'].append(elapsed)
-    # print(f"[TIMING] {marker}: {elapsed:.4f}s")
+    with _trace_lock:
+        idx = len(timing_stats['llm_inference']) - 1
+        if idx < len(query_traces):
+            query_traces[idx]['llm_inference'] = round(elapsed, 6)
+            query_traces[idx]['total'] = round(
+                sum(query_traces[idx].get(s, 0) for s in ['web_search', 'fetch_url', 'summarize', 'llm_inference']), 6
+            )
     nvtx.pop_range()
     return {'final_response': answer}
  
@@ -203,6 +232,8 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', type=int, default=1, help="Langchain batch size")
     parser.add_argument('--job-id', type=int, default=1, help="Job id for bash multiprocessing")
     parser.add_argument('--benchmark', choices=["freshQA", "musique", "QASC"], default="freshQA")
+    parser.add_argument('--query-file', type=str, default=None, help="Path to a file with one question per line (overrides --benchmark)")
+    parser.add_argument('--trace-output', type=str, default=None, help="Path to write per-query JSON traces")
 
 
     args = parser.parse_args()
@@ -215,22 +246,24 @@ if __name__ == '__main__':
         mini_batch = batch_size
     job_id = args.job_id
 
-    if args.benchmark == "freshQA":
-        query_single = "Which game won the Spiel des Jahres award most recently?"
-    elif args.benchmark == "musique":
-        query_single = "When did the people who captured Malakoff come to the region where Philipsburg is located?"
-    elif args.benchmark == "QASC":
-        query_single = "Differential heating of air can be harnessed for what?"
+    if args.query_file:
+        from pathlib import Path
+        queries = [line.strip() for line in Path(args.query_file).read_text().splitlines() if line.strip()]
+        if batch_size > len(queries):
+            print(f"Warning: batch_size ({batch_size}) > available questions ({len(queries)}), capping to {len(queries)}")
+            batch_size = len(queries)
+        queries = queries[:batch_size]
     else:
-        print("Wrong benchmark choice. Choose among 'freshQA', 'musique' and 'QASC'.")
-        sys.exit()
-    
-
-    queries = []
-
-
-    for i in range(batch_size):
-        queries.append(query_single)
+        if args.benchmark == "freshQA":
+            query_single = "Which game won the Spiel des Jahres award most recently?"
+        elif args.benchmark == "musique":
+            query_single = "When did the people who captured Malakoff come to the region where Philipsburg is located?"
+        elif args.benchmark == "QASC":
+            query_single = "Differential heating of air can be harnessed for what?"
+        else:
+            print("Wrong benchmark choice. Choose among 'freshQA', 'musique' and 'QASC'.")
+            sys.exit()
+        queries = [query_single] * batch_size
  
  
     initial_states = [
@@ -244,6 +277,9 @@ if __name__ == '__main__':
     nvtx.push_range('batch_run_all_queries')
     start_time = timeit.default_timer()
  
+    print(f"\n{'='*70}")
+    print(f"BENCHMARK: {args.benchmark} | batch_size={batch_size}")
+    print(f"{'='*70}")
     print(f"{job_id}: [TIMING] start: {start_time:.4f}s")
 
     result_states = compiled_graph.batch(initial_states, config=cfg)
@@ -256,8 +292,24 @@ if __name__ == '__main__':
     if args.verbose:
         print_timing_statistics()
  
-    # for state in result_states:
-    #     print(f"🧑 » {state['query']}")
-    #     print(f"🤖 » {state['final_response']}\n")
+    if args.trace_output:
+        from pathlib import Path
+        from datetime import datetime, timezone
+        for i, trace in enumerate(query_traces):
+            if i < len(result_states):
+                trace['query'] = result_states[i].get('query', '')
+                trace['answer'] = result_states[i].get('final_response', '')
+                trace['summaries'] = result_states[i].get('summaries', [])
+        trace_data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "benchmark": args.query_file or args.benchmark,
+            "batch_size": batch_size,
+            "sequential": args.sequential,
+            "job_id": job_id,
+            "total_wall_time": round(elapsed, 6),
+            "traces": query_traces,
+        }
+        Path(args.trace_output).write_text(json.dumps(trace_data, indent=2))
+        print(f"Traces written to {args.trace_output} ({len(query_traces)} queries)")
  
  

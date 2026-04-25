@@ -1,17 +1,15 @@
-conda activate main
+source /data1/joshw/venv/bin/activate
 
 # Update root directory as per your file structure
-export ROOT=/home/cpu-centric-agentic-ai
+export ROOT=/home/jwang354/cpu-centric-agentic-ai
 
 # Update HF_HOME env variable as per your hugging face home location
-export HF_HOME=/storage/hugging_face/
+export HF_HOME=/data1/joshw/hugging_face/hf_home
 
 MODEL=openai/gpt-oss-20b
 GPU=0
 
 echo "Starting vLLM server ..."
-
-export HF_HOME=/storage/ritikraj/hugging_face/
 CUDA_VISIBLE_DEVICES="$GPU" vllm serve "$MODEL" --no-enable-prefix-caching --port 5000 > vllm.log 2>&1 &
 echo $! > vllm.pid
 
@@ -25,10 +23,6 @@ done'; then
 fi
 
 echo "vLLM server started. Running experiment ..."
-
-conda deactivate
-
-conda activate langchain
 
 bash "$ROOT/langchain/run_batch_experiment_verbose.sh" -r "$ROOT" 
 

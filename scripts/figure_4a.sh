@@ -1,10 +1,10 @@
-conda activate main
+source /data1/joshw/venv/bin/activate
 
 # Update root directory as per your file structure
-export ROOT=/home/cpu-centric-agentic-ai
+export ROOT=/home/jwang354/cpu-centric-agentic-ai
 
 # Update HF_HOME env variable as per your hugging face home location
-export HF_HOME=/storage/hugging_face/
+export HF_HOME=/data1/joshw/hugging_face/hf_home
 
 MODEL=openai/gpt-oss-20b
 GPU=0

@@ -12,6 +12,7 @@ from typing import List, Dict, Optional
 import nvtx
 import requests
 from bs4 import BeautifulSoup
+from tavily import TavilyClient
 from sumy.parsers.plaintext import PlaintextParser
 from sumy.nlp.tokenizers import Tokenizer
 from sumy.summarizers.lex_rank import LexRankSummarizer
@@ -33,18 +34,12 @@ class GraphState(typedef('GraphState', {})):
 def web_search(state: GraphState) -> GraphState:
     marker = f"web_search: {state['query'][:30]}"
     nvtx.push_range(marker)
-    # key, cx = os.getenv('GOOGLE_API_KEY'), os.getenv('GOOGLE_CX')
-    # if not key or not cx:
-    #     nvtx.pop_range(); raise RuntimeError('Missing GOOGLE_API_KEY or GOOGLE_CX')
-    # params = {'key': key, 'cx': cx, 'q': state['query'], 'num': 5}
-    # resp = requests.get('https://www.googleapis.com/customsearch/v1', params=params, timeout=10)
-    # resp.raise_for_status()
-    # items = resp.json().get('items', [])
-    # urls = [i['link'] for i in items if 'link' in i]
-    urls = ["https://itif.org/publications/2024/08/19/how-innovative-is-china-in-semiconductors/",
-    "https://www.csis.org/analysis/too-good-lose-americas-stake-intel",
-    "https://www.piie.com/sites/default/files/2025-01/piieb25-1.pdf",
-    "https://www.roc-taiwan.org/uploads/sites/86/2024/04/2024_April___May_Issue.pdf"]
+    api_key = os.getenv('TAVILY_API_KEY')
+    if not api_key:
+        nvtx.pop_range(); raise RuntimeError('Missing TAVILY_API_KEY')
+    client = TavilyClient(api_key=api_key)
+    response = client.search(state['query'], max_results=5)
+    urls = [r['url'] for r in response.get('results', []) if 'url' in r]
     nvtx.pop_range()
     return {'urls': urls}
  

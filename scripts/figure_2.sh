@@ -1,13 +1,13 @@
 # This automated script creates vllm servers, runs the benchmarks and plots figure 2 of the paper.
 # Note: It excludes DS-1000 benchmark 
 
-conda activate main
+source /data1/joshw/venv/bin/activate
 
 # Update root directory as per your file structure
-export ROOT=/home/cpu-centric-agentic-ai
+export ROOT=/home/jwang354/cpu-centric-agentic-ai
 
 # Update HF_HOME env variable as per your hugging face home location
-export HF_HOME=/storage/hugging_face/
+export HF_HOME=/data1/joshw/hugging_face/hf_home
 
 # Default model, can be updated as needed
 MODEL=openai/gpt-oss-20b
@@ -32,10 +32,6 @@ fi
 
 echo "vLLM server started. Running langchain workload ..."
 
-conda deactivate
-
-conda activate langchain
-
 # Add your Google Search API keys
 export GOOGLE_CX=<>
 export GOOGLE_API_KEY=<>
@@ -45,15 +41,11 @@ python "$ROOT/langchain/orchestrator.py" --benchmark musique --verbose >> "$ROOT
 python "$ROOT/langchain/orchestrator.py" --benchmark QASC --verbose >> "$ROOT/langchain/latency_figure2_temp4.txt"
 
 
-conda deactivate
-
-conda activate main
-
 echo "Running haystack workload ..."
 
-python "$ROOT/haystack/retrieval.py" query-rag --store-dir /storage/rag_flat_store --question "When was Albert Einstein born?" > "$ROOT/haystack/latency_figure2_temp.txt"
-python "$ROOT/haystack/retrieval.py" query-rag --store-dir /storage/rag_flat_store --question "Which year was the scientist who developed E=mc^2 born?" >> "$ROOT/haystack/latency_figure2_temp.txt"
-python "$ROOT/haystack/retrieval.py" query-rag --store-dir /storage/rag_flat_store --question "What is Einstein's most famous equation?" >> "$ROOT/haystack/latency_figure2_temp.txt"
+python "$ROOT/haystack/retrieval.py" query-rag --store-dir /data1/joshw/rag_flat_store --question "When was Albert Einstein born?" > "$ROOT/haystack/latency_figure2_temp.txt"
+python "$ROOT/haystack/retrieval.py" query-rag --store-dir /data1/joshw/rag_flat_store --question "Which year was the scientist who developed E=mc^2 born?" >> "$ROOT/haystack/latency_figure2_temp.txt"
+python "$ROOT/haystack/retrieval.py" query-rag --store-dir /data1/joshw/rag_flat_store --question "What is Einstein's most famous equation?" >> "$ROOT/haystack/latency_figure2_temp.txt"
 
 kill -TERM "$(cat vllm.pid)"
 
@@ -109,8 +101,6 @@ done'; then
 fi
 
 echo "vLLM server started. Running mini-swe-agent workload ..."
-conda deactivate
-conda activate swe
 python "$ROOT/mini-swe-agent/benchmark_latency.py" --output-dir "$ROOT/mini-swe-agent/benchmark_results_temp" --benchmark-type sorting
 python "$ROOT/mini-swe-agent/benchmark_latency.py" --output-dir "$ROOT/mini-swe-agent/benchmark_results_temp" --benchmark-type integration
 

@@ -1,10 +1,10 @@
-conda activate main
+source /data1/joshw/venv/bin/activate
 
 # Update root directory as per your file structure
-export ROOT=/home/cpu-centric-agentic-ai
+export ROOT=/home/jwang354/cpu-centric-agentic-ai
 
 # Update HF_HOME env variable as per your hugging face home location
-export HF_HOME=/storage/hugging_face/
+export HF_HOME=/data1/joshw/hugging_face/hf_home
 
 MODEL=openai/gpt-oss-20b
 GPU=0
@@ -25,19 +25,11 @@ fi
 
 echo "vLLM server started. Running langchain workload ..."
 
-conda deactivate
-
-conda activate langchain
-
 bash "$ROOT/langchain/run_batch_experiment.sh" -r "$ROOT"
-
-conda deactivate
-
-conda activate main
 
 echo "Running haystack workload ..."
 
-python "$ROOT/haystack/benchmark_batch_parallel_retrieval.py" --query-file "$ROOT/haystack/queries.txt" --output-file "$ROOT/haystack/figure_4b.json" --store-dir /storage/rag_flat_store
+python "$ROOT/haystack/benchmark_batch_parallel_retrieval.py" --query-file "$ROOT/haystack/queries.txt" --output-file "$ROOT/haystack/figure_4b.json" --store-dir /data1/joshw/rag_flat_store
 
 kill -TERM "$(cat vllm.pid)"
 
@@ -94,8 +86,6 @@ done'; then
 fi
 
 echo "vLLM server started. Running mini-swe-agent workload ..."
-conda deactivate
-conda activate swe
 bash "$ROOT/mini-swe-agent/run_batch_experiment.sh"
 
 

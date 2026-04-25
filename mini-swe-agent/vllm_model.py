@@ -14,7 +14,7 @@ from minisweagent.models import GLOBAL_MODEL_STATS
 
 @dataclass 
 class VLLMModelConfig:
-    base_url: str = "http://localhost:8000/v1"
+    base_url: str = "http://localhost:5000/v1"
     api_key: str = "token-abc123"
     model_name: str = "Qwen/Qwen2.5-Coder-32B-Instruct"
     max_tokens: int = 4096
