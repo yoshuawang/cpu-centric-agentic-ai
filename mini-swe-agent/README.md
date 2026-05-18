@@ -66,6 +66,10 @@ vllm serve Qwen/Qwen2.5-Coder-32B-Instruct \
 python benchmark_latency.py --benchmark-type sorting
 ```
 
+### Docker + resource trace
+
+To run the benchmark inside Docker and write **`stats_log.csv`** (cgroup-based CPU/memory sampling, optional host GPU via `nvidia-smi`), see **[README_DOCKER.md](README_DOCKER.md)**.
+
 ## Benchmark Types
  
 ### 1. CPU-Intensive Benchmarks

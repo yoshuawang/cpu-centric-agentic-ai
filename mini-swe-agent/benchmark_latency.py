@@ -26,6 +26,11 @@ from minisweagent.agents.default import DefaultAgent, AgentConfig
 from minisweagent.environments.local import LocalEnvironment
 from minisweagent.config import builtin_config_dir, get_config_path
 from minisweagent.environments import get_environment
+from minisweagent.utils.resource_monitor import (
+    ResourceMonitor,
+    aggregate_resource_metrics,
+    empty_resource_metrics,
+)
 import tempfile
 
 
@@ -36,6 +41,205 @@ class LatencyBenchmarker:
         self.model_config = model_config
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
+        self.resource_monitor = ResourceMonitor(interval_s=0.2)
+        self.resource_monitor.start()
+
+    def _build_usage_time_by_stage(self, timing_summary: Dict[str, Any], total_runtime: float) -> Dict[str, Any]:
+        """Normalize usage-time fields into a stage-oriented breakdown."""
+        total_runtime = total_runtime or 0.0
+        llm_time = timing_summary.get("total_llm_time_seconds", 0.0) or 0.0
+        bash_time = timing_summary.get("total_bash_time_seconds", 0.0) or 0.0
+        overhead_time = timing_summary.get(
+            "other_time_seconds",
+            max(0.0, total_runtime - llm_time - bash_time),
+        ) or 0.0
+
+        def stage_record(duration: float) -> Dict[str, float]:
+            return {
+                "duration_seconds": duration,
+                "percentage_of_runtime": (duration / total_runtime * 100) if total_runtime > 0 else 0.0,
+            }
+
+        return {
+            "total_runtime_seconds": total_runtime,
+            "stages": {
+                "llm_api": stage_record(llm_time),
+                "bash_execution": stage_record(bash_time),
+                "agent_overhead": stage_record(overhead_time),
+            },
+        }
+
+    def _summarize_window(self, start_t: float, end_t: float) -> Dict[str, Any]:
+        """Wrap monitor.summarize, falling back to empty metrics on failure."""
+        if start_t is None or end_t is None or end_t <= start_t:
+            return empty_resource_metrics()
+        try:
+            return self.resource_monitor.summarize(start_t, end_t)
+        except Exception:
+            return empty_resource_metrics()
+
+    def _attach_call_resource_metrics(
+        self,
+        model_call_log: List[Dict[str, Any]],
+        bash_execution_log: List[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Annotate each LLM call and bash command with its window's metrics."""
+        llm_metrics: List[Dict[str, Any]] = []
+        for call in model_call_log:
+            start_t = call.get("timestamp")
+            duration = call.get("duration_total_seconds", 0.0) or 0.0
+            end_t = start_t + duration if isinstance(start_t, (int, float)) else None
+            metrics = self._summarize_window(start_t, end_t) if start_t is not None else empty_resource_metrics()
+            call["resource_metrics"] = metrics
+            llm_metrics.append(metrics)
+
+        bash_metrics: List[Dict[str, Any]] = []
+        for execution in bash_execution_log:
+            start_t = execution.get("timestamp_start")
+            end_t = execution.get("timestamp_end")
+            metrics = self._summarize_window(start_t, end_t) if start_t is not None and end_t is not None else empty_resource_metrics()
+            execution["resource_metrics"] = metrics
+            bash_metrics.append(metrics)
+
+        return llm_metrics, bash_metrics
+
+    def _overhead_window_metrics(
+        self,
+        run_start: float,
+        run_end: float,
+        model_call_log: List[Dict[str, Any]],
+        bash_execution_log: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Sample resource metrics during gaps between LLM calls and bash commands."""
+        if not run_start or not run_end or run_end <= run_start:
+            return empty_resource_metrics()
+
+        busy: List[tuple[float, float]] = []
+        for call in model_call_log:
+            s = call.get("timestamp")
+            d = call.get("duration_total_seconds", 0.0) or 0.0
+            if isinstance(s, (int, float)):
+                busy.append((float(s), float(s) + float(d)))
+        for execution in bash_execution_log:
+            s = execution.get("timestamp_start")
+            e = execution.get("timestamp_end")
+            if isinstance(s, (int, float)) and isinstance(e, (int, float)):
+                busy.append((float(s), float(e)))
+
+        busy.sort()
+        merged: List[tuple[float, float]] = []
+        for s, e in busy:
+            if merged and s <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+            else:
+                merged.append((s, e))
+
+        gap_metrics: List[Dict[str, Any]] = []
+        cursor = run_start
+        for s, e in merged:
+            if s > cursor:
+                gap_metrics.append(self._summarize_window(cursor, min(s, run_end)))
+            cursor = max(cursor, e)
+            if cursor >= run_end:
+                break
+        if cursor < run_end:
+            gap_metrics.append(self._summarize_window(cursor, run_end))
+
+        return aggregate_resource_metrics(gap_metrics)
+
+    def _add_usage_time_breakdown(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Attach stage timing and resource metrics to an individual benchmark result."""
+        timing_summary = result.get("timing_summary", {})
+        total_runtime = result.get("total_runtime", result.get("total_wall_time", 0.0)) or 0.0
+        usage_time_by_stage = self._build_usage_time_by_stage(timing_summary, total_runtime)
+
+        detailed_logs = result.get("detailed_logs", {})
+        model_call_log = detailed_logs.get("model_api_calls", []) or []
+        bash_execution_log = detailed_logs.get("bash_executions", []) or []
+
+        llm_metrics, bash_metrics = self._attach_call_resource_metrics(
+            model_call_log, bash_execution_log
+        )
+
+        run_start = None
+        run_end = None
+        for call in model_call_log:
+            s = call.get("timestamp")
+            d = call.get("duration_total_seconds", 0.0) or 0.0
+            if isinstance(s, (int, float)):
+                run_start = s if run_start is None else min(run_start, s)
+                run_end = (s + d) if run_end is None else max(run_end, s + d)
+        for execution in bash_execution_log:
+            s = execution.get("timestamp_start")
+            e = execution.get("timestamp_end")
+            if isinstance(s, (int, float)):
+                run_start = s if run_start is None else min(run_start, s)
+            if isinstance(e, (int, float)):
+                run_end = e if run_end is None else max(run_end, e)
+
+        overhead_metrics = self._overhead_window_metrics(
+            run_start or 0.0, run_end or 0.0, model_call_log, bash_execution_log
+        )
+
+        stage_resource_metrics = {
+            "llm_api": aggregate_resource_metrics(llm_metrics),
+            "bash_execution": aggregate_resource_metrics(bash_metrics),
+            "agent_overhead": overhead_metrics,
+        }
+        for stage_name, stage_data in usage_time_by_stage["stages"].items():
+            stage_data["resource_metrics"] = stage_resource_metrics.get(
+                stage_name, empty_resource_metrics()
+            )
+
+        run_metrics = (
+            self._summarize_window(run_start, run_end)
+            if run_start is not None and run_end is not None
+            else empty_resource_metrics()
+        )
+        usage_time_by_stage["resource_metrics"] = run_metrics
+
+        result["usage_time_by_stage"] = usage_time_by_stage
+        timing_summary["usage_time_by_stage"] = usage_time_by_stage
+        result["timing_summary"] = timing_summary
+        result["resource_metrics"] = run_metrics
+        return result
+
+    def _aggregate_usage_time_by_stage(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Aggregate stage timing and resource metrics across benchmark results."""
+        stage_names = ("llm_api", "bash_execution", "agent_overhead")
+        stage_totals = {name: 0.0 for name in stage_names}
+        stage_metric_buckets: Dict[str, List[Dict[str, Any]]] = {name: [] for name in stage_names}
+        run_metric_bucket: List[Dict[str, Any]] = []
+        total_runtime = 0.0
+
+        for result in results:
+            usage = result.get("usage_time_by_stage", {})
+            total_runtime += usage.get("total_runtime_seconds", result.get("total_runtime", 0.0) or 0.0)
+            stages = usage.get("stages", {})
+            for name in stage_names:
+                stage_totals[name] += stages.get(name, {}).get("duration_seconds", 0.0) or 0.0
+                metrics = stages.get(name, {}).get("resource_metrics")
+                if metrics:
+                    stage_metric_buckets[name].append(metrics)
+            run_metrics = (
+                usage.get("resource_metrics")
+                or result.get("resource_metrics")
+            )
+            if run_metrics:
+                run_metric_bucket.append(run_metrics)
+
+        return {
+            "total_runtime_seconds": total_runtime,
+            "stages": {
+                name: {
+                    "duration_seconds": stage_totals[name],
+                    "percentage_of_runtime": (stage_totals[name] / total_runtime * 100) if total_runtime > 0 else 0.0,
+                    "resource_metrics": aggregate_resource_metrics(stage_metric_buckets[name]),
+                }
+                for name in stage_names
+            },
+            "resource_metrics": aggregate_resource_metrics(run_metric_bucket),
+        }
         
     def load_swebench_config(self):
         """Load the proper SWEBench agent configuration."""
@@ -61,6 +265,7 @@ class LatencyBenchmarker:
             "success_rate_percent": success_rate,
             "total_benchmark_time": total_time,
             "average_time_per_instance": total_time / total_instances if total_instances > 0 else 0,
+            "usage_time_by_stage": self._aggregate_usage_time_by_stage(all_results),
             "individual_results": all_results,
             "timestamp": time.time(),
             "status": "in_progress"
@@ -203,7 +408,7 @@ Please implement a complete solution and finish by running: echo COMPLETE_TASK_A
 
         # print(f"Completed in {total_time:.1f}s | Status: {exit_status}")
 
-        return benchmark_summary
+        return self._add_usage_time_breakdown(benchmark_summary)
     
     def run_fibonacci_benchmark(self) -> Dict[str, Any]:
         """Run CPU-intensive Fibonacci computation benchmark."""
@@ -309,7 +514,7 @@ Please implement a complete solution and finish by running: echo COMPLETE_TASK_A
 
         print(f"Completed in {total_time:.1f}s | Status: {exit_status}")
 
-        return benchmark_summary
+        return self._add_usage_time_breakdown(benchmark_summary)
 
     def run_numerical_integration_benchmark(self) -> Dict[str, Any]:
         """Run CPU-intensive numerical integration benchmark."""
@@ -404,7 +609,7 @@ Please implement a complete solution and finish by running: echo COMPLETE_TASK_A
 
         print(f"Completed in {total_time:.1f}s | Status: {exit_status}")
 
-        return benchmark_summary
+        return self._add_usage_time_breakdown(benchmark_summary)
     
     def run_swebench_benchmark(self, instance_ids: List[str] = None, max_instances: int = 10) -> Dict[str, Any]:
         """Run SWEBench benchmark on multiple instances."""
@@ -501,6 +706,7 @@ Please implement a complete solution and finish by running: echo COMPLETE_TASK_A
             "success_rate_percent": success_rate,
             "total_benchmark_time": total_time,
             "average_time_per_instance": total_time / total_instances if total_instances > 0 else 0,
+            "usage_time_by_stage": self._aggregate_usage_time_by_stage(all_results),
             "individual_results": all_results,
             "timestamp": time.time(),
             "status": "completed"
@@ -668,7 +874,7 @@ Please implement a complete solution and finish by running: echo COMPLETE_TASK_A
         
         print(f"Completed in {total_time:.1f}s | Status: {exit_status}")
         
-        return benchmark_summary
+        return self._add_usage_time_breakdown(benchmark_summary)
     
     def run_prime_number_benchmark(self) -> Dict[str, Any]:
         """Run CPU-intensive prime number computation benchmark."""
@@ -765,7 +971,7 @@ Please implement a complete solution and finish by running: echo COMPLETE_TASK_A
 
         print(f"Completed in {total_time:.1f}s | Status: {exit_status}")
 
-        return benchmark_summary
+        return self._add_usage_time_breakdown(benchmark_summary)
     
     def run_sudoku_benchmark(self) -> Dict[str, Any]:
         """Run sudoku game development benchmark with complex operations."""
@@ -863,7 +1069,7 @@ Please implement a complete solution and finish by running: echo COMPLETE_TASK_A
 
         print(f"Completed in {total_time:.1f}s | Status: {exit_status}")
 
-        return benchmark_summary
+        return self._add_usage_time_breakdown(benchmark_summary)
 
     def run_lu_decomposition_benchmark(self) -> Dict[str, Any]:
         """Run vectorized NumPy LU decomposition benchmark without using linalg.lu."""
@@ -968,7 +1174,7 @@ Please implement a complete solution and finish by running: echo COMPLETE_TASK_A
 
         print(f"Completed in {total_time:.1f}s | Status: {exit_status}")
 
-        return benchmark_summary
+        return self._add_usage_time_breakdown(benchmark_summary)
 
     def run_knn_benchmark(self) -> Dict[str, Any]:
         """Run NumPy k-NN benchmark without scikit-learn."""
@@ -1060,7 +1266,7 @@ Please implement a complete solution and finish by running: echo COMPLETE_TASK_A
 
         print(f"Completed in {total_time:.1f}s | Status: {exit_status}")
 
-        return benchmark_summary
+        return self._add_usage_time_breakdown(benchmark_summary)
 
     def run_fft_convolution_benchmark(self) -> Dict[str, Any]:
         """Run FFT-based 1D convolution benchmark: pure-Python FFT vs NumPy FFT."""
@@ -1168,7 +1374,7 @@ Please implement a complete solution and finish by running: echo COMPLETE_TASK_A
 
         print(f"Completed in {total_time:.1f}s | Status: {exit_status}")
 
-        return benchmark_summary
+        return self._add_usage_time_breakdown(benchmark_summary)
 
     def run_scicode_benchmark(self, problem_ids: List[str] = None, max_problems: int = 5, scicode_data_path: str = "./scicode_data") -> Dict[str, Any]:
         """Run SciCode benchmark on scientific computing problems."""
@@ -1291,6 +1497,7 @@ Please implement a complete solution and finish by running: echo COMPLETE_TASK_A
             "success_rate_percent": success_rate,
             "total_benchmark_time": total_time,
             "average_time_per_problem": total_time / total_problems if total_problems > 0 else 0,
+            "usage_time_by_stage": self._aggregate_usage_time_by_stage(all_results),
             "individual_results": all_results,
             "timestamp": time.time(),
             "status": "completed"
@@ -1443,7 +1650,7 @@ Please implement a complete solution and finish by running: echo COMPLETE_TASK_A
         
         print(f"Completed in {total_time:.1f}s | Status: {exit_status}")
         
-        return benchmark_summary
+        return self._add_usage_time_breakdown(benchmark_summary)
     
     def run_livecodebench_benchmark(self, problem_ids: List[str] = None, max_problems: int = 5, scenario: str = "code_generation") -> Dict[str, Any]:
         """Run LiveCodeBench benchmark on code-related tasks."""
@@ -1587,6 +1794,7 @@ Please implement a complete solution and finish by running: echo COMPLETE_TASK_A
             "success_rate_percent": success_rate,
             "total_benchmark_time": total_time,
             "average_time_per_problem": total_time / total_problems if total_problems > 0 else 0,
+            "usage_time_by_stage": self._aggregate_usage_time_by_stage(all_results),
             "individual_results": all_results,
             "timestamp": time.time(),
             "status": "completed"
@@ -1830,7 +2038,7 @@ Please solve this problem and finish by running: echo COMPLETE_TASK_AND_SUBMIT_F
         
         print(f"Completed in {total_time:.1f}s | Status: {exit_status}")
         
-        return benchmark_summary
+        return self._add_usage_time_breakdown(benchmark_summary)
     
     def run_comprehensive_cpu_benchmark(self) -> List[Dict[str, Any]]:
         """Run comprehensive CPU-intensive benchmark across all workload types."""
@@ -1880,6 +2088,7 @@ Please solve this problem and finish by running: echo COMPLETE_TASK_AND_SUBMIT_F
         comprehensive_results = {
             "timestamp": time.time(),
             "model_config": self.model_config,
+            "usage_time_by_stage": self._aggregate_usage_time_by_stage(results),
             "results": results
         }
         

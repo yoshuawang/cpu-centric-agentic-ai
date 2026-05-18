@@ -64,3 +64,9 @@ index_store/
 # Energy measurement outputs
 energy/gpu_power.csv
 energy/*.csv
+
+# Generated benchmark artifacts
+mini-swe-agent/benchmark_results/
+
+# Local nested checkout used for benchmark workloads
+mini-swe-agent/astropy/

@@ -24,6 +24,8 @@ import argparse
  
 import time
 from collections import defaultdict
+from dataclasses import dataclass
+import re
  
 # Global timing storage for statistics
 timing_stats = defaultdict(list)
@@ -32,6 +34,171 @@ timing_stats = defaultdict(list)
 query_traces: List[Dict[str, float]] = []
 _trace_lock = __import__('threading').Lock()
  
+# ----------------------------
+# vLLM timing/metrics helpers
+# ----------------------------
+
+_PROM_HIST_SUM_RE = re.compile(
+    r"^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)_sum(?:\\{[^}]*\\})?\\s+(?P<value>[-+eE0-9\\.]+)\\s*$"
+)
+_PROM_HIST_COUNT_RE = re.compile(
+    r"^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)_count(?:\\{[^}]*\\})?\\s+(?P<value>[-+eE0-9\\.]+)\\s*$"
+)
+
+
+@dataclass(frozen=True)
+class _PromHist:
+    sum: float
+    count: float
+
+
+def _parse_prom_hist(metrics_text: str, metric_name: str) -> Optional[_PromHist]:
+    """Parse a Prometheus histogram's _sum/_count (no labels) from text."""
+    s = None
+    c = None
+    for line in metrics_text.splitlines():
+        if line.startswith("#"):
+            continue
+        m = _PROM_HIST_SUM_RE.match(line)
+        if m and m.group("name") == metric_name:
+            try:
+                s = float(m.group("value"))
+            except ValueError:
+                s = None
+            continue
+        m = _PROM_HIST_COUNT_RE.match(line)
+        if m and m.group("name") == metric_name:
+            try:
+                c = float(m.group("value"))
+            except ValueError:
+                c = None
+            continue
+    if s is None or c is None:
+        return None
+    return _PromHist(sum=s, count=c)
+
+
+def _derive_vllm_metrics_url(openai_base_url: str) -> str:
+    # Typical: http://host:port/v1  ->  http://host:port/metrics
+    if openai_base_url.endswith("/"):
+        openai_base_url = openai_base_url[:-1]
+    if openai_base_url.endswith("/v1"):
+        return openai_base_url[:-3] + "/metrics"
+    return openai_base_url + "/metrics"
+
+
+def _scrape_vllm_metrics(metrics_url: str, timeout_s: float = 3.0) -> Optional[str]:
+    try:
+        r = requests.get(metrics_url, timeout=timeout_s)
+        r.raise_for_status()
+        return r.text
+    except Exception:
+        return None
+
+
+def _hist_delta_avg(before: Optional[_PromHist], after: Optional[_PromHist]) -> Optional[float]:
+    if before is None or after is None:
+        return None
+    d_count = after.count - before.count
+    d_sum = after.sum - before.sum
+    if d_count <= 0:
+        return None
+    return d_sum / d_count
+
+
+def _vllm_completion_stream(
+    *,
+    openai_base_url: str,
+    model: str,
+    prompt: str,
+    timeout_s: float = 180.0,
+    max_tokens: int = 256,
+    temperature: float = 0.0,
+) -> tuple[str, float, float]:
+    """
+    Stream `/v1/completions` and return (text, ttft_seconds, e2e_seconds).
+
+    Notes:
+    - TTFT is measured from request start until first non-[DONE] SSE chunk.
+    - e2e is measured from request start until [DONE].
+    """
+    url = openai_base_url.rstrip("/") + "/completions"
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": True,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    headers = {"Authorization": "Bearer EMPTY"}
+
+    start = timeit.default_timer()
+    ttft = None
+    text_parts: List[str] = []
+
+    with requests.post(url, json=payload, headers=headers, stream=True, timeout=timeout_s) as r:
+        r.raise_for_status()
+        for raw in r.iter_lines(decode_unicode=True):
+            if raw is None:
+                continue
+            line = raw.strip()
+            if not line:
+                continue
+            if not line.startswith("data:"):
+                continue
+            data = line[len("data:"):].strip()
+            if data == "[DONE]":
+                break
+            if ttft is None:
+                ttft = timeit.default_timer() - start
+            try:
+                obj = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            # OpenAI-style completions: choices[].text contains deltas for streaming
+            choices = obj.get("choices", [])
+            if choices:
+                delta = choices[0].get("text")
+                if isinstance(delta, str) and delta:
+                    text_parts.append(delta)
+
+    e2e = timeit.default_timer() - start
+    if ttft is None:
+        ttft = e2e
+    return "".join(text_parts), float(ttft), float(e2e)
+
+def _vllm_completion_non_stream_with_headers(
+    *,
+    openai_base_url: str,
+    model: str,
+    prompt: str,
+    timeout_s: float = 180.0,
+    max_tokens: int = 256,
+    temperature: float = 0.0,
+) -> tuple[str, Dict[str, str]]:
+    """Call `/v1/completions` (non-streaming) and return (text, response_headers)."""
+    url = openai_base_url.rstrip("/") + "/completions"
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    headers = {"Authorization": "Bearer EMPTY"}
+    r = requests.post(url, json=payload, headers=headers, timeout=timeout_s)
+    r.raise_for_status()
+    obj = r.json()
+    text = ""
+    choices = obj.get("choices", [])
+    if choices and isinstance(choices[0], dict):
+        t = choices[0].get("text")
+        if isinstance(t, str):
+            text = t
+    return text, dict(r.headers)
+
+
+
 # 1) Shared state schema
 typedef = TypedDict  # compatibility alias
 class GraphState(typedef('GraphState', {})):
@@ -166,21 +333,53 @@ def final_answer(state: GraphState) -> GraphState:
     marker = f"llm_inference: {state['query'][:30]}"
     nvtx.push_range(marker)
     start_time = timeit.default_timer()
-    from langchain_community.llms import VLLMOpenAI
-    llm = VLLMOpenAI(
-        base_url='http://localhost:5000/v1',
-        model="openai/gpt-oss-20b",
-        openai_api_key='EMPTY'  # no API key required for local VLLM
- 
-    )
+    openai_base_url = os.getenv("VLLM_OPENAI_BASE_URL", "http://localhost:5000/v1")
+    model = os.getenv("VLLM_MODEL", "openai/gpt-oss-20b")
     prompt = f"Based on these summaries, answer: {state['query']}\n\n" + "\n\n".join(state['summaries'])
-    answer = llm.invoke([prompt])
+
+    # vLLM server now returns exact per-request timings as HTTP headers
+    # (x-vllm-ttft-ms, x-vllm-e2e-ms, x-vllm-prefill-ms, x-vllm-decode-ms, ...).
+    answer, resp_headers = _vllm_completion_non_stream_with_headers(
+        openai_base_url=openai_base_url,
+        model=model,
+        prompt=prompt,
+        max_tokens=int(os.getenv("VLLM_MAX_TOKENS", "256")),
+        temperature=float(os.getenv("VLLM_TEMPERATURE", "0.0")),
+    )
+
+    def _header_ms(name: str) -> Optional[float]:
+        v = resp_headers.get(name)
+        if v is None:
+            return None
+        try:
+            return float(v)
+        except ValueError:
+            return None
+
+    ttft_ms = _header_ms("x-vllm-ttft-ms")
+    e2e_ms = _header_ms("x-vllm-e2e-ms")
+    queue_ms = _header_ms("x-vllm-queue-ms")
+    prefill_ms = _header_ms("x-vllm-prefill-ms")
+    decode_ms = _header_ms("x-vllm-decode-ms")
+
     elapsed = timeit.default_timer() - start_time
     timing_stats['llm_inference'].append(elapsed)
     with _trace_lock:
         idx = len(timing_stats['llm_inference']) - 1
         if idx < len(query_traces):
             query_traces[idx]['llm_inference'] = round(elapsed, 6)
+            # New: exact vLLM per-request timings (seconds), stored alongside
+            # the old stages for notebook analysis.
+            if ttft_ms is not None:
+                query_traces[idx]['llm_ttft'] = round(ttft_ms / 1000.0, 6)
+            if e2e_ms is not None:
+                query_traces[idx]['llm_e2e'] = round(e2e_ms / 1000.0, 6)
+            if queue_ms is not None:
+                query_traces[idx]['llm_queue'] = round(queue_ms / 1000.0, 6)
+            if prefill_ms is not None:
+                query_traces[idx]['llm_prefill'] = round(prefill_ms / 1000.0, 6)
+            if decode_ms is not None:
+                query_traces[idx]['llm_decode'] = round(decode_ms / 1000.0, 6)
             query_traces[idx]['total'] = round(
                 sum(query_traces[idx].get(s, 0) for s in ['web_search', 'fetch_url', 'summarize', 'llm_inference']), 6
             )
