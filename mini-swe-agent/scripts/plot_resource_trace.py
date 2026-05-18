@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot resource time series from run_benchmark_docker.sh stats_log.csv."""
+"""Plot resource time series from scripts/run_benchmark_docker.sh stats_log.csv."""
 
 from __future__ import annotations
 

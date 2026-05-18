@@ -2,7 +2,7 @@
 # Run vLLM and mini-swe-agent in separate Docker containers and capture stats.
 #
 # Usage:
-#   ./run_benchmark_docker.sh [BENCHMARK_TYPE] [BASE_URL] [MODEL_PATH]
+#   ./scripts/run_benchmark_docker.sh [BENCHMARK_TYPE] [BASE_URL] [MODEL_PATH]
 #
 # Defaults:
 #   BENCHMARK_TYPE  sorting
@@ -31,6 +31,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 BENCHMARK_TYPE="${1:-sorting}"
 MODEL_PATH="${3:-Qwen/Qwen2.5-Coder-32B-Instruct}"
@@ -132,7 +133,7 @@ wait_for_vllm() {
   return 1
 }
 
-mkdir -p "$SCRIPT_DIR/benchmark_results"
+mkdir -p "$ROOT_DIR/benchmark_results"
 
 echo "[info] Benchmark type        : $BENCHMARK_TYPE"
 echo "[info] Model path            : $MODEL_PATH"
@@ -142,7 +143,7 @@ echo "[info] Benchmark container   : $BENCH_CONTAINER_NAME"
 echo "[info] Docker network        : $DOCKER_NETWORK_NAME"
 echo "[info] Benchmark base URL    : $BASE_URL"
 echo "[info] vLLM health URL       : ${VLLM_HEALTH_BASE_URL%/}/health"
-echo "[info] Output file           : $SCRIPT_DIR/$OUTPUT_FILE"
+echo "[info] Output file           : $ROOT_DIR/$OUTPUT_FILE"
 echo "[info] Sampling interval     : ${INTERVAL}s"
 echo "[info] GPU sampling interval : ${GPU_INTERVAL}s"
 echo ""
@@ -162,7 +163,7 @@ if ! "${DOCKER_CMD[@]}" network inspect "$DOCKER_NETWORK_NAME" >/dev/null 2>&1; 
 fi
 
 echo "[info] Starting resource monitor."
-OUTPUT_FILE="$SCRIPT_DIR/$OUTPUT_FILE" \
+OUTPUT_FILE="$ROOT_DIR/$OUTPUT_FILE" \
 INTERVAL="$INTERVAL" \
 GPU_INTERVAL="$GPU_INTERVAL" \
 bash "$SCRIPT_DIR/monitor_docker_resources.sh" "$VLLM_CONTAINER_NAME" "$BENCH_CONTAINER_NAME" &
@@ -215,7 +216,7 @@ BENCH_EXIT=0
 "${DOCKER_CMD[@]}" run \
   --name "$BENCH_CONTAINER_NAME" \
   --network "$DOCKER_NETWORK_NAME" \
-  -v "$SCRIPT_DIR/benchmark_results:/app/benchmark_results" \
+  -v "$ROOT_DIR/benchmark_results:/app/benchmark_results" \
   "$BENCH_IMAGE" \
   python benchmark_latency.py \
     --benchmark-type "$BENCHMARK_TYPE" \
@@ -226,7 +227,7 @@ stop_monitor
 
 echo ""
 echo "[info] Benchmark finished with exit code: $BENCH_EXIT"
-echo "[info] Stats written to: $SCRIPT_DIR/$OUTPUT_FILE"
+echo "[info] Stats written to: $ROOT_DIR/$OUTPUT_FILE"
 echo ""
 echo "--- Last 10 stats entries ---"
 tail -10 "$SCRIPT_DIR/$OUTPUT_FILE" || true

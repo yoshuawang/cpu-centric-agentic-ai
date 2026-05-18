@@ -68,7 +68,7 @@ python benchmark_latency.py --benchmark-type sorting
 
 ### Docker + resource trace
 
-To run the benchmark inside Docker and write **`stats_log.csv`** (cgroup-based CPU/memory sampling, optional host GPU via `nvidia-smi`), see **[README_DOCKER.md](README_DOCKER.md)**.
+To run the benchmark inside Docker and write **`stats_log.csv`** (cgroup-based CPU/memory sampling, optional host GPU via `nvidia-smi`), see **[docs/docker.md](docs/docker.md)**.
 
 ## Benchmark Types
  

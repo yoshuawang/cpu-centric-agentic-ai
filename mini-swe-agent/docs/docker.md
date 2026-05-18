@@ -2,7 +2,7 @@
 
 This guide covers building the benchmark image, starting vLLM, running `benchmark_latency.py` inside Docker, and collecting **`stats_log.csv`** (CPU, memory, block I/O, optional host GPU) at configurable intervals.
 
-For extra Docker build notes and troubleshooting, see [DOCKER_SETUP.md](DOCKER_SETUP.md).
+For extra Docker build notes and troubleshooting, see [docker_setup.md](docker_setup.md).
 
 ## Prerequisites
 
@@ -51,8 +51,8 @@ Keep this process running while you run the benchmark script.
 
 ```bash
 cd /path/to/cpu-centric-agentic-ai/mini-swe-agent
-chmod +x run_benchmark_docker.sh   # once
-./run_benchmark_docker.sh [BENCHMARK_TYPE] [BASE_URL] [MODEL_PATH]
+chmod +x scripts/run_benchmark_docker.sh   # once
+./scripts/run_benchmark_docker.sh [BENCHMARK_TYPE] [BASE_URL] [MODEL_PATH]
 ```
 
 **Positional arguments (all optional):**
@@ -74,7 +74,7 @@ Example with a different benchmark and remote vLLM:
 
 ```bash
 INTERVAL=0.2 GPU_INTERVAL=2.0 \
-  ./run_benchmark_docker.sh integration http://192.168.1.10:5000 Qwen/Qwen2.5-Coder-32B-Instruct
+  ./scripts/run_benchmark_docker.sh integration http://192.168.1.10:5000 Qwen/Qwen2.5-Coder-32B-Instruct
 ```
 
 ## 4. Outputs
@@ -90,7 +90,7 @@ INTERVAL=0.2 GPU_INTERVAL=2.0 \
 
 ## 5. Manual Docker run (without the script)
 
-Equivalent to what the script does for the workload (stats collection is only in `run_benchmark_docker.sh`):
+Equivalent to what the script does for the workload (stats collection is only in `scripts/run_benchmark_docker.sh`):
 
 ```bash
 docker run --rm \
@@ -109,11 +109,12 @@ docker run --rm \
 - **Connection refused to vLLM:** Ensure the server is listening on `0.0.0.0` (or the IP you use in `BASE_URL`) and that the port matches.
 - **Permission denied on Docker socket:** Install/configure Docker for your user, or rely on the script’s `sudo docker` fallback.
 - **cgroup v2 error:** Upgrade/kernel config must expose unified cgroup; mixed v1/v2-only setups are not supported by this sampler.
-- **Empty or header-only `stats_log.csv`:** Usually a race or cgroup path issue on an older script; use the current `run_benchmark_docker.sh` (loop waits on `cpu.stat` under the container cgroup).
+- **Empty or header-only `stats_log.csv`:** Usually a race or cgroup path issue on an older script; use the current `scripts/run_benchmark_docker.sh` (loop waits on `cpu.stat` under the container cgroup).
 
 ## Files involved
 
-- [Dockerfile](Dockerfile) — image definition (`PYTHONPATH=/app/src`, dependencies).
-- [.dockerignore](.dockerignore) — shrinks build context.
-- [run_benchmark_docker.sh](run_benchmark_docker.sh) — benchmark + cgroup v2 + optional GPU sampling.
-- [DOCKER_SETUP.md](DOCKER_SETUP.md) — original Docker notes and `docker stats` examples.
+- [../Dockerfile](../Dockerfile) — image definition (`PYTHONPATH=/app/src`, dependencies).
+- [../.dockerignore](../.dockerignore) — shrinks build context.
+- [../scripts/run_benchmark_docker.sh](../scripts/run_benchmark_docker.sh) — benchmark + cgroup v2 + optional GPU sampling.
+- [../scripts/monitor_docker_resources.sh](../scripts/monitor_docker_resources.sh) — cgroup and GPU sampler used by the runner.
+- [docker_setup.md](docker_setup.md) — original Docker notes and `docker stats` examples.
