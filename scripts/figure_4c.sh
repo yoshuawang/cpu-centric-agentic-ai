@@ -24,11 +24,11 @@ fi
 
 echo "vLLM server started. Running experiment ..."
 
-bash "$ROOT/langchain/run_batch_experiment_verbose.sh" -r "$ROOT" 
+bash "$ROOT/langchain/scripts/run_batch_experiment_verbose.sh" -r "$ROOT"
 
 echo "Experiment completed. Plotting figure ..."
 
-python "$ROOT/langchain/plot_error_bar.py" -i "$ROOT/langchain/batch_timing_results_4c.csv" -o "$ROOT/figures/figure_4c.png"
+python "$ROOT/langchain/scripts/plot_error_bar.py" -i "$ROOT/langchain/benchmark_results/batch_timing_results_4c.csv" -o "$ROOT/figures/figure_4c.png"
 kill -TERM "$(cat vllm.pid)"
 
 wait "$(cat vllm.pid)" 2>/dev/null || true

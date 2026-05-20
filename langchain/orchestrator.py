@@ -26,6 +26,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 import re
+from urllib.parse import urlsplit, urlunsplit
  
 # Global timing storage for statistics
 timing_stats = defaultdict(list)
@@ -104,6 +105,43 @@ def _hist_delta_avg(before: Optional[_PromHist], after: Optional[_PromHist]) -> 
     if d_count <= 0:
         return None
     return d_sum / d_count
+
+
+def _redact_url_userinfo(url: str) -> str:
+    """Redact username/password from URLs before persisting run metadata."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if not parts.username and not parts.password:
+        return url
+    host = parts.hostname or ""
+    if parts.port is not None:
+        host = f"{host}:{parts.port}"
+    return urlunsplit((parts.scheme, f"<redacted>@{host}", parts.path, parts.query, parts.fragment))
+
+
+def _run_metadata() -> Dict[str, object]:
+    """Return non-secret run metadata suitable for JSON traces."""
+    docker_keys = [
+        "LANGCHAIN_RUN_ID",
+        "LANGCHAIN_IMAGE",
+        "LANGCHAIN_CONTAINER_NAME",
+        "VLLM_IMAGE",
+        "VLLM_CONTAINER_NAME",
+        "DOCKER_NETWORK_NAME",
+        "START_VLLM_CONTAINER",
+        "VLLM_PORT",
+    ]
+    docker_metadata = {key.lower(): os.getenv(key) for key in docker_keys if os.getenv(key)}
+    return {
+        "vllm_openai_base_url": _redact_url_userinfo(os.getenv("VLLM_OPENAI_BASE_URL", "http://localhost:5000/v1")),
+        "vllm_model": os.getenv("VLLM_MODEL", "openai/gpt-oss-20b"),
+        "vllm_max_tokens": os.getenv("VLLM_MAX_TOKENS", "256"),
+        "vllm_temperature": os.getenv("VLLM_TEMPERATURE", "0.0"),
+        "tavily_api_key_present": bool(os.getenv("TAVILY_API_KEY")),
+        "docker": docker_metadata,
+    }
 
 
 def _vllm_completion_stream(
@@ -220,7 +258,7 @@ def web_search(state: GraphState) -> GraphState:
     if state['skip_web_search'] == False:
         api_key = os.getenv('TAVILY_API_KEY')
         if not api_key:
-            nvtx.pop_range(); raise RuntimeError('Missing TAVILY_API_KEY')
+            nvtx.pop_range(); raise RuntimeError('Missing TAVILY_API_KEY. Set it at runtime or pass --skip-web-search.')
         client = TavilyClient(api_key=api_key)
         for attempt in range(3):
             try:
@@ -313,9 +351,12 @@ def summarize(state: GraphState) -> GraphState:
     nvtx.push_range(marker)
     start_time = timeit.default_timer() 
  
-    max_workers = len(state["page_texts"])
-    with ProcessPoolExecutor(max_workers=max_workers) as pool:
-        sums = list(pool.map(_lexrank_one, state["page_texts"]))
+    if state["page_texts"]:
+        max_workers = len(state["page_texts"])
+        with ProcessPoolExecutor(max_workers=max_workers) as pool:
+            sums = list(pool.map(_lexrank_one, state["page_texts"]))
+    else:
+        sums = []
  
  
     elapsed = timeit.default_timer() - start_time
@@ -505,7 +546,9 @@ if __name__ == '__main__':
             "batch_size": batch_size,
             "sequential": args.sequential,
             "job_id": job_id,
+            "skip_web_search": args.skip_web_search,
             "total_wall_time": round(elapsed, 6),
+            "metadata": _run_metadata(),
             "traces": query_traces,
         }
         Path(args.trace_output).write_text(json.dumps(trace_data, indent=2))

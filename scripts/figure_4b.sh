@@ -25,7 +25,7 @@ fi
 
 echo "vLLM server started. Running langchain workload ..."
 
-bash "$ROOT/langchain/run_batch_experiment.sh" -r "$ROOT"
+bash "$ROOT/langchain/scripts/run_batch_experiment.sh" -r "$ROOT"
 
 echo "Running haystack workload ..."
 

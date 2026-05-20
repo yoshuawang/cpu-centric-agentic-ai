@@ -1,169 +1,226 @@
 # LangChain Orchestrator
- 
-A high-performance batch LLM orchestrator built with LangGraph that implements a complete web-queried chatbot pipeline with comprehensive performance profiling using NVTX markers.
- 
+
+A batch LLM orchestrator built with LangGraph for web-queried QA benchmarks, with per-stage timing, optional NVTX profiling, and Docker-based resource tracing (aligned with the [mini-swe-agent](../mini-swe-agent/) layout).
+
 ## Overview
- 
-This orchestrator processes multiple queries in batches through a four-stage pipeline: web search, content fetching, summarization, and LLM inference. Each stage is instrumented with NVTX markers for detailed performance analysis and supports parallel processing for optimal throughput. The system implements a stateful graph workflow with the following stages:
- 
+
+The orchestrator runs queries through a four-stage pipeline and records timing for each stage. It supports parallel batches, JSON trace export, and host-side cgroup/GPU sampling when run via Docker.
+
 ```
 web_search → fetch_url → summarize → final_answer
 ```
- 
-### Pipeline Stages
- 
-1. **Web Search** - Uses Google Custom Search API to retrieve relevant URLs
-2. **Content Fetching** - Downloads and extracts plain text from web pages (parallel processing)
-3. **Summarization** - Generates extractive summaries using LexRank algorithm (parallel processing)
-4. **LLM Inference** - Produces final answers using a local VLLM-hosted language model
- 
- 
-## Requirements
- 
-### Python Dependencies
- 
-If already setup, activate langchain conda environment-
 
-`conda activate langchain`
+| Stage | Description |
+|-------|-------------|
+| **web_search** | Tavily Search API (optional; use `--skip-web-search` for static URLs) |
+| **fetch_url** | Download and extract page text (parallel) |
+| **summarize** | LexRank extractive summaries (parallel) |
+| **llm_inference** | Final answer via vLLM OpenAI-compatible API |
 
-Or, if you want to setup from scratch-
+## Architecture
+
+```
+User → orchestrator.py (LangGraph) → vLLM (OpenAI API)
+              ↓
+        benchmark_results/  (traces, batch logs)
+        stats_log.csv       (Docker resource monitor)
+```
+
+## Directory layout
+
+```
+langchain/
+├── orchestrator.py              # Main benchmark entry
+├── orchestrator_cpu_only.py     # CPU-only variant (no LLM stage)
+├── Dockerfile
+├── .dockerignore
+├── stats_log.csv                # Written by run_benchmark_docker.sh (gitignored)
+├── benchmark_results/           # Traces, batch logs, plot outputs
+├── docs/
+│   ├── docker.md                # Docker run + stats collection
+│   └── docker_setup.md          # Build notes and troubleshooting
+├── notebooks/
+│   └── trace_analysis.ipynb
+└── scripts/
+    ├── run_benchmark_docker.sh      # vLLM + LangChain containers + monitor
+    ├── monitor_docker_resources.sh  # cgroup + nvidia-smi → stats_log.csv
+    ├── plot_resource_trace.py       # Plot stats_log.csv time series
+    ├── run_batch_experiment.sh        # Host parallel batch sweep
+    ├── run_batch_experiment_verbose.sh
+    ├── bash_parallel.sh
+    ├── cgam_overlap.sh
+    ├── parse_stats.py
+    ├── print_trace_report.py
+    └── plot_*.py
+```
+
+## Installation
+
+### Conda environment
+
+```bash
+conda activate langchain
+```
+
+### Dependencies (host)
 
 ```bash
 pip install langchain==0.3.27 langgraph==0.6.10 langchain-core==0.3.79 langchain-community==0.3.31
 pip install requests beautifulsoup4==4.14.2 sumy==0.11.0
-pip install nvtx
+pip install nvtx tavily-python openai
 ```
  
 ### External Services
  
-- **Google Custom Search API**: Requires `GOOGLE_API_KEY` and `GOOGLE_CX` environment variables
-    - Go to [Google API website](https://developers.google.com/custom-search/v1/introduction) to request an API key.
-        - Click on 'Gey a Key' button.
-        - Select or Create a new project.
-        - Click on 'CONFIRM AND CONTINUE' button.
-        - Click on 'SHOW KEY' button.
-    - Go to [Google CX website](https://programmablesearchengine.google.com/controlpanel/all) to request Google CX code.
-        - Select your search engine or Create one and go into that.
-        - You can find the CX id titled as "Search engine ID".
-        - Public URL also has the cx id in the Query param as ?cx=**.
-- **VLLM Server**: Local LLM server running at `http://localhost:8000/v1`
-    - `conda activate main` if already setup, otherwise install vllm from pip - `pip install vllm==0.11.0`
-    - `export HF_HOME=/storage/ritikraj/hugging_face` if you want to use the downloaded model.
-    - `vllm serve openai/gpt-oss-20b --no-prefix-caching`
-    - Prefix caching is diabled by default to mimic fully independent runs that do not share any prompt. 
+- **Tavily Search API**: Requires `TAVILY_API_KEY` when web search is enabled.
+    - Keep this key in your shell or secret manager.
+    - Do not put it in the Dockerfile, Docker image, or committed scripts.
+- **VLLM Server**: Local OpenAI-compatible server running at `http://localhost:5000/v1`
+    - The Docker runner starts `vllm/vllm-openai:latest` as a separate GPU container by default.
+    - It mounts the local Hugging Face cache and auto-resolves `openai/gpt-oss-20b` under `/data1/joshw/hugging_face/hf_home`.
+    - It starts vLLM with `--enforce-eager` and `--no-enable-prefix-caching` by default, matching the mini-swe-agent Docker setup.
  
 ## Environment Setup
  
 ```bash
-export GOOGLE_API_KEY="your-google-api-key"
-export GOOGLE_CX="your-custom-search-engine-id"
-```
- 
-## Usage
- 
-### Basic Usage
- 
-```bash
-python langchain_orchestrator.py --batch_size 4 --benchmark freshQA
-```
- 
-### Command-Line Arguments
- 
-| Argument | Type | Default | Description |
-|----------|------|---------|-------------|
-| `--batch_size` | int | 1 | Number of queries to process in parallel |
-| `--benchmark` | str | freshQA | Benchmark dataset to use (freshQA, musique, QASC) |
- 
- 
-## Detailed Performance Monitoring
- 
-### NVTX Profiling
- 
-Each pipeline stage is annotated with NVTX markers in the format:
-```
-<stage_name>: <query_preview>
-```
- 
-Use NVIDIA Nsight Systems to visualize:
-```bash
-nsys profile -t nvtx,cuda python langchain_orchestrator.py --batch_size 8
-nsys-ui output_profile.nsys-rep
-```
- 
-### Timing Statistics
- 
-The system tracks execution time for each stage:
-- **web_search**: Google API query time
-- **fetch_url**: Web page download and parsing time
-- **summarize**: LexRank summarization time
-- **llm_inference**: LLM response generation time
- 
-Statistics include count, average, minimum, and maximum execution times across all batches.
- 
-## Configuration
- 
-### LLM Model Configuration
- 
-Edit the `final_answer()` function to configure the LLM:
- 
-```python
-llm = VLLMOpenAI(
-    base_url='http://localhost:8000/v1',
-    model="openai/gpt-oss-20b",  # Change model here
-    openai_api_key='EMPTY'
-)
-```
- 
-### Search Results Limit
- 
-Control number of URLs fetched per query at line 96:
-```python
-if len(texts) >= 2:  # Adjust number of pages
-    break
+export TAVILY_API_KEY="your-tavily-api-key"
+export VLLM_OPENAI_BASE_URL="http://localhost:5000/v1"
+export VLLM_MODEL="openai/gpt-oss-20b"
 ```
 
- 
-## Output Format
- 
-The system outputs timing information in the format:
+## Usage
+
+### Host benchmark
+
+From the `langchain/` directory:
+
+```bash
+python orchestrator.py --batch-size 4 --benchmark freshQA --skip-web-search --verbose
+```
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--batch-size` | `1` | Parallel queries per batch |
+| `--benchmark` | `freshQA` | Dataset: `freshQA`, `musique`, `QASC` |
+| `--skip-web-search` | off | Use built-in static URLs (no Tavily) |
+| `--verbose` | off | Print per-stage timing table |
+| `--trace-output` | none | Write per-query JSON trace |
+| `--job-id` | `1` | Job id prefix in logs |
+
+### Docker + resource trace
+
+Run inside Docker with a separate vLLM GPU container and collect **`stats_log.csv`** (cgroup CPU/memory, block I/O, host GPU via `nvidia-smi`). Full details: **[docs/docker.md](docs/docker.md)**.
+
+```bash
+cd langchain
+
+# One-time: NLTK data for the image build context
+test -d nltk_data || cp -a ../nltk_data ./nltk_data
+
+docker build -t langchain-agent:local .
+./scripts/run_benchmark_docker.sh freshQA
+```
+
+**Common overrides:**
+
+```bash
+BATCH_SIZE=8 VERBOSE=1 ./scripts/run_benchmark_docker.sh freshQA
+
+# Reuse an already-running vLLM on the host
+START_VLLM_CONTAINER=0 \
+  VLLM_HEALTH_BASE_URL=http://127.0.0.1:5000 \
+  ./scripts/run_benchmark_docker.sh freshQA
+```
+
+**Plot resource traces:**
+
+```bash
+python scripts/plot_resource_trace.py stats_log.csv
+```
+
+### Host batch sweeps (no Docker)
+
+```bash
+./scripts/run_batch_experiment.sh
+./scripts/run_batch_experiment_verbose.sh   # writes CSV under benchmark_results/
+```
+
+## Benchmarks
+
+| Name | Description |
+|------|-------------|
+| `freshQA` | FreshQA-style queries (default) |
+| `musique` | Multi-hop QA |
+| `QASC` | Science QA |
+
+## Outputs
+
+| Path | Description |
+|------|-------------|
+| **`benchmark_results/`** | Trace JSON (`trace_<benchmark>_batch<N>_<run_id>.json`), batch experiment logs, generated figures |
+| **`stats_log.csv`** | Per-container resource samples from Docker runs (default: `langchain/stats_log.csv`) |
+
+**Console timing:**
+
 ```
 <job_id>: [TIMING] start: <timestamp>s
-<job_id>: [TIMING] end: <elapsed_time>s
+<job_id>: [TIMING] end: <elapsed>s
 ```
- 
-Uncomment lines 258-262 to print full results:
-```python
-for state in result_states:
-    print(f"🧑 » {state['query']}")
-    print(f"🤖 » {state['final_response']}\n")
+
+**Trace JSON** (`--trace-output` or Docker `TRACE_OUTPUT`): per-query stage timings and run metadata (model, endpoints, container names). Secrets such as `TAVILY_API_KEY` are never written.
+
+**Print a trace report:**
+
+```bash
+python scripts/print_trace_report.py benchmark_results/trace_*.json
 ```
- 
-## Error Handling
- 
-- **Missing API Keys**: Raises `RuntimeError` if `GOOGLE_API_KEY` or `GOOGLE_CX` not set
-- **Network Errors**: Silently skips failed URL fetches, continues with available content
-- **Timeout Protection**: 10-second timeout on HTTP requests
- 
- 
- 
+
+## Performance monitoring
+
+### Stage timing
+
+With `--verbose`, the orchestrator prints count / avg / min / max per stage: `web_search`, `fetch_url`, `summarize`, `llm_inference`.
+
+### NVTX (optional)
+
+Stages are annotated for NVIDIA Nsight Systems:
+
+```bash
+nsys profile -t nvtx,cuda python orchestrator.py --batch-size 8 --skip-web-search
+nsys-ui output_profile.nsys-rep
+```
+
+### Resource CSV columns
+
+`stats_log.csv` includes per-container cgroup metrics plus host-wide GPU columns (`GPU_Util_Max`, `GPU_Mem_Used`, `GPU_Mem_Perc`). GPU values reflect the whole machine (dominated by vLLM), not per-container VRAM attribution.
+
+## Configuration
+
+- **URL fetch limit**: edit the `if len(texts) >= 2` guard in `orchestrator.py`.
+- **vLLM**: `VLLM_OPENAI_BASE_URL`, `VLLM_MODEL`, optional `VLLM_MAX_TOKENS`, `VLLM_TEMPERATURE`.
+- **Docker runner**: see env vars in `scripts/run_benchmark_docker.sh` header (`INTERVAL`, `GPU_INTERVAL`, `BATCH_SIZE`, `SKIP_WEB_SEARCH`, etc.).
+
+## Error handling
+
+- Missing `TAVILY_API_KEY` without `--skip-web-search` → `RuntimeError`
+- Failed URL fetches are skipped; the pipeline continues with available content
+- HTTP requests use a 10-second timeout
+
 ## Development
- 
-### Extending the Pipeline
- 
-To add new pipeline stages:
- 
-1. Define node function with `GraphState` parameter
-2. Add NVTX markers and timing instrumentation
-3. Register node in graph builder
-4. Connect with edges
- 
+
+To add a pipeline stage:
+
+1. Define a node with `GraphState`
+2. Add NVTX markers and timing if needed
+3. Register the node and edges in the graph builder
+
 ```python
 def new_stage(state: GraphState) -> GraphState:
     nvtx.push_range("new_stage")
-    # ... implementation ...
+    # ...
     nvtx.pop_range()
     return {"new_field": result}
- 
-builder.add_node('new_stage', new_stage)
-builder.add_edge('previous_stage', 'new_stage')
+
+builder.add_node("new_stage", new_stage)
+builder.add_edge("previous_stage", "new_stage")
 ```

@@ -32,9 +32,9 @@ fi
 
 echo "vLLM server started. Running langchain workload ..."
 
-# Add your Google Search API keys
-export GOOGLE_CX=<>
-export GOOGLE_API_KEY=<>
+# LangChain web search uses Tavily. Keep the key in the runtime environment;
+# do not commit it into this script.
+: "${TAVILY_API_KEY:?Set TAVILY_API_KEY before running figure_2.sh}"
 
 python "$ROOT/langchain/orchestrator.py" --benchmark freshQA --verbose > "$ROOT/langchain/latency_figure2_temp4.txt"
 python "$ROOT/langchain/orchestrator.py" --benchmark musique --verbose >> "$ROOT/langchain/latency_figure2_temp4.txt"
