@@ -36,7 +36,7 @@ def web_search(state: GraphState) -> GraphState:
     nvtx.push_range(marker)
     api_key = os.getenv('TAVILY_API_KEY')
     if not api_key:
-        nvtx.pop_range(); raise RuntimeError('Missing TAVILY_API_KEY')
+        nvtx.pop_range(); raise RuntimeError('Missing TAVILY_API_KEY. Set it at runtime.')
     client = TavilyClient(api_key=api_key)
     response = client.search(state['query'], max_results=5)
     urls = [r['url'] for r in response.get('results', []) if 'url' in r]
@@ -177,9 +177,12 @@ def summarize(state: GraphState) -> GraphState:
     # Workers = min(#docs, #cores) for good scaling
  
  
-    max_workers = min(len(state["page_texts"]), 1)
-    with ProcessPoolExecutor(max_workers=max_workers) as pool:
-        sums = list(pool.map(_lexrank_one, state["page_texts"]))
+    if state["page_texts"]:
+        max_workers = min(len(state["page_texts"]), 1)
+        with ProcessPoolExecutor(max_workers=max_workers) as pool:
+            sums = list(pool.map(_lexrank_one, state["page_texts"]))
+    else:
+        sums = []
  
     # sums = _lexrank_one(state["page_texts"])
  

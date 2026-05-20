@@ -1,0 +1,9 @@
+.git
+**/__pycache__/
+*.pyc
+*.pyo
+benchmark_results/
+notebooks/
+.matplotlib-cache
+.DS_Store
+stats_log.csv

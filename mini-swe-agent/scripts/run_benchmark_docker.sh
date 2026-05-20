@@ -216,6 +216,7 @@ BENCH_EXIT=0
 "${DOCKER_CMD[@]}" run \
   --name "$BENCH_CONTAINER_NAME" \
   --network "$DOCKER_NETWORK_NAME" \
+  --add-host=host.docker.internal:host-gateway \
   -v "$ROOT_DIR/benchmark_results:/app/benchmark_results" \
   "$BENCH_IMAGE" \
   python benchmark_latency.py \
@@ -230,6 +231,6 @@ echo "[info] Benchmark finished with exit code: $BENCH_EXIT"
 echo "[info] Stats written to: $ROOT_DIR/$OUTPUT_FILE"
 echo ""
 echo "--- Last 10 stats entries ---"
-tail -10 "$SCRIPT_DIR/$OUTPUT_FILE" || true
+tail -10 "$ROOT_DIR/$OUTPUT_FILE" || true
 
 exit "$BENCH_EXIT"

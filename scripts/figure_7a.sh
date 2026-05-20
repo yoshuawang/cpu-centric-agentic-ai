@@ -25,29 +25,29 @@ fi
 
 echo "vLLM server started. Running baseline ..."
 
-bash "$ROOT/langchain/bash_parallel.sh" -o "$ROOT/langchain/orchestrator.py" > "$ROOT/langchain/baseline_7a.txt"
+bash "$ROOT/langchain/scripts/bash_parallel.sh" -o "$ROOT/langchain/orchestrator.py" > "$ROOT/langchain/benchmark_results/baseline_7a.txt"
 
 echo "Running cgam ..."
 
 # Generate jobs.txt with the correct ROOT path
-JOBS_FILE="$ROOT/langchain/jobs.txt"
+JOBS_FILE="$ROOT/langchain/scripts/jobs.txt"
 > "$JOBS_FILE"  # Clear the file
 
 for i in {1..64}; do
     echo "python $ROOT/langchain/orchestrator.py --skip-web-search --job-id $i" >> "$JOBS_FILE"
 done
 
-cat "$ROOT/langchain/jobs.txt" "$ROOT/langchain/jobs.txt" | xargs -P 64 -n 1 -I{} bash -c "{}" > "$ROOT/langchain/cgam_7a.txt"
+cat "$JOBS_FILE" "$JOBS_FILE" | xargs -P 64 -n 1 -I{} bash -c "{}" > "$ROOT/langchain/benchmark_results/cgam_7a.txt"
 echo "Running cgam_overlap ..."
 
-bash "$ROOT/langchain/cgam_overlap.sh" -r "$ROOT"
+bash "$ROOT/langchain/scripts/cgam_overlap.sh" -r "$ROOT"
 
-cat "$ROOT/langchain/cgam_7a_o1.txt" "$ROOT/langchain/cgam_7a_o2.txt" > "$ROOT/langchain/cgam_7a_overlap.txt"
+cat "$ROOT/langchain/benchmark_results/cgam_7a_o1.txt" "$ROOT/langchain/benchmark_results/cgam_7a_o2.txt" > "$ROOT/langchain/benchmark_results/cgam_7a_overlap.txt"
 
 echo "Plotting figures ..."
 
-python "$ROOT/langchain/plot_percentiles.py" --case1 "$ROOT/langchain/baseline_7a.txt" --case2 "$ROOT/langchain/cgam_7a.txt" --output "$ROOT/figures/figure_7a.png"
-python "$ROOT/langchain/plot_percentiles_overlap.py" --case1 "$ROOT/langchain/baseline_7a.txt" --case2 "$ROOT/langchain/cgam_7a_overlap.txt" --output "$ROOT/figures/figure_7a_overlap.png" 
+python "$ROOT/langchain/scripts/plot_percentiles.py" --case1 "$ROOT/langchain/benchmark_results/baseline_7a.txt" --case2 "$ROOT/langchain/benchmark_results/cgam_7a.txt" --output "$ROOT/figures/figure_7a.png"
+python "$ROOT/langchain/scripts/plot_percentiles_overlap.py" --case1 "$ROOT/langchain/benchmark_results/baseline_7a.txt" --case2 "$ROOT/langchain/benchmark_results/cgam_7a_overlap.txt" --output "$ROOT/figures/figure_7a_overlap.png" 
 
 kill -TERM "$(cat vllm.pid)"
 

@@ -1,0 +1,15 @@
+.git
+**/__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+
+figures/
+mini-swe-agent/astropy/
+mini-swe-agent/benchmark_results/
+mini-swe-agent/notebooks/
+langchain/__pycache__/
+langchain/benchmark_results/
+langchain/notebooks/
+langchain/nltk_data/
+langchain/stats_log.csv
