@@ -30,6 +30,7 @@ RUN python -m pip install --upgrade pip setuptools wheel && \
       prompt_toolkit \
       textual \
       litellm \
+      langsmith \
       tenacity \
       psutil \
       nvidia-ml-py \

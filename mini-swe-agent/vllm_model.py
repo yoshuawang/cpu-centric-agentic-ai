@@ -11,6 +11,18 @@ from typing import Any
 
 from minisweagent.models import GLOBAL_MODEL_STATS
 
+try:
+    from langsmith import traceable  # type: ignore
+except ImportError:  # langsmith not installed: provide a no-op decorator
+    def traceable(*dargs, **dkwargs):  # type: ignore[no-redef]
+        if dargs and callable(dargs[0]) and not dkwargs:
+            return dargs[0]
+
+        def _decorator(fn):
+            return fn
+
+        return _decorator
+
 
 @dataclass 
 class VLLMModelConfig:
@@ -33,6 +45,7 @@ class VLLMModel:
         self.cost = 0.0
         self.call_log = []  # Store all API calls for logging
     
+    @traceable(run_type="llm", name="vllm_query")
     def query(self, messages: list[dict[str, str]], **kwargs) -> dict:
         """Query the vLLM server directly using OpenAI-compatible API with retry logic."""
         

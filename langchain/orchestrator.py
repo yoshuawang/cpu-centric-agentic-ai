@@ -27,7 +27,25 @@ from collections import defaultdict
 from dataclasses import dataclass
 import re
 from urllib.parse import urlsplit, urlunsplit
- 
+
+# LangSmith tracing: mirror the env-var pattern used by
+# gpt-researcher/multi_agents/main.py. When LANGCHAIN_API_KEY is set we flip
+# LANGCHAIN_TRACING_V2 on so LangGraph nodes auto-publish spans to LangSmith.
+if os.environ.get("LANGCHAIN_API_KEY"):
+    os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+
+try:
+    from langsmith import traceable  # type: ignore
+except ImportError:  # langsmith not installed: provide a no-op decorator
+    def traceable(*dargs, **dkwargs):  # type: ignore[no-redef]
+        if dargs and callable(dargs[0]) and not dkwargs:
+            return dargs[0]
+
+        def _decorator(fn):
+            return fn
+
+        return _decorator
+
 # Global timing storage for statistics
 timing_stats = defaultdict(list)
 
@@ -205,6 +223,7 @@ def _vllm_completion_stream(
         ttft = e2e
     return "".join(text_parts), float(ttft), float(e2e)
 
+@traceable(run_type="llm", name="vllm_completion")
 def _vllm_completion_non_stream_with_headers(
     *,
     openai_base_url: str,

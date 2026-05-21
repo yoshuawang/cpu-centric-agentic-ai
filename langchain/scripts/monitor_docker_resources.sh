@@ -121,6 +121,7 @@ read_container_net_stat() {
 
 GPU_COUNT=0
 GPU_UTIL_MAX="N/A"
+GPU_MEM_UTIL_MAX="N/A"
 GPU_MEM_USED="N/A"
 GPU_MEM_TOTAL="N/A"
 GPU_MEM_PCT="N/A"
@@ -128,6 +129,7 @@ GPU_MEM_PCT="N/A"
 read_gpu_stats() {
   GPU_COUNT=0
   GPU_UTIL_MAX="N/A"
+  GPU_MEM_UTIL_MAX="N/A"
   GPU_MEM_USED="N/A"
   GPU_MEM_TOTAL="N/A"
   GPU_MEM_PCT="N/A"
@@ -138,7 +140,7 @@ read_gpu_stats() {
 
   local out parsed used_b total_b
   if ! out=$("$NVIDIA_SMI" \
-      --query-gpu=utilization.gpu,memory.used,memory.total \
+      --query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total \
       --format=csv,noheader,nounits 2>/dev/null); then
     return 0
   fi
@@ -157,11 +159,13 @@ read_gpu_stats() {
       return (s ~ /^[0-9.]+$/) ? s + 0 : 0
     }
     {
-      util = num($1)
-      used = num($2)
-      total = num($3)
+      util     = num($1)
+      mem_util = num($2)
+      used     = num($3)
+      total    = num($4)
       if (total > 0) {
         if (util > util_max) util_max = util
+        if (mem_util > mem_util_max) mem_util_max = mem_util
         used_sum += used
         total_sum += total
         count += 1
@@ -169,15 +173,16 @@ read_gpu_stats() {
     }
     END {
       if (count == 0 || total_sum <= 0) exit 1
-      printf "%d,%.2f%%,%.0f,%.0f,%.2f%%",
-        count, util_max, used_sum * 1048576, total_sum * 1048576,
+      printf "%d,%.2f%%,%.2f%%,%.0f,%.0f,%.2f%%",
+        count, util_max, mem_util_max,
+        used_sum * 1048576, total_sum * 1048576,
         used_sum / total_sum * 100
     }
   ' <<< "$out"); then
     return 0
   fi
 
-  IFS=',' read -r GPU_COUNT GPU_UTIL_MAX used_b total_b GPU_MEM_PCT <<< "$parsed"
+  IFS=',' read -r GPU_COUNT GPU_UTIL_MAX GPU_MEM_UTIL_MAX used_b total_b GPU_MEM_PCT <<< "$parsed"
   GPU_MEM_USED=$(fmt_bytes "$used_b")
   GPU_MEM_TOTAL=$(fmt_bytes "$total_b")
 }

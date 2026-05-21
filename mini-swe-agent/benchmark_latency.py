@@ -18,6 +18,14 @@ import timeit
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 import os
+
+# LangSmith tracing: mirror the env-var pattern used by
+# gpt-researcher/multi_agents/main.py. When LANGCHAIN_API_KEY is set we flip
+# LANGCHAIN_TRACING_V2 on so @traceable spans (agent_run, agent_step, llm_api,
+# vllm_query, bash_execution) auto-publish to LangSmith.
+if os.environ.get("LANGCHAIN_API_KEY"):
+    os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+
 from datasets import load_dataset
 from typing import List
 # Use direct vLLM model to avoid LiteLLM complexities
@@ -31,6 +39,8 @@ from minisweagent.utils.resource_monitor import (
     aggregate_resource_metrics,
     empty_resource_metrics,
 )
+from minisweagent.utils.langsmith_export import export_langsmith_traces
+from datetime import datetime, timezone
 import tempfile
 
 
@@ -2135,6 +2145,7 @@ def main():
 
 
     args = parser.parse_args()
+    run_started_at = datetime.now(timezone.utc)
     if not args.no_print:
         print(f"{args.job_id}: [TIMING] start: {start_time:.4f}s")
     
@@ -2283,6 +2294,12 @@ def main():
                      f"({result.get('model_calls', 'N/A')} calls)")
             else:
                 print(f"  {result['dataset']}: ERROR - {result['error']}")
+
+    export_langsmith_traces(
+        benchmarker.output_dir,
+        args.benchmark_type,
+        run_started_at,
+    )
 
 
 if __name__ == "__main__":

@@ -4,6 +4,18 @@ import subprocess
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+try:
+    from langsmith import traceable  # type: ignore
+except ImportError:  # langsmith not installed: provide a no-op decorator
+    def traceable(*dargs, **dkwargs):  # type: ignore[no-redef]
+        if dargs and callable(dargs[0]) and not dkwargs:
+            return dargs[0]
+
+        def _decorator(fn):
+            return fn
+
+        return _decorator
+
 
 @dataclass
 class LocalEnvironmentConfig:
@@ -18,6 +30,7 @@ class LocalEnvironment:
         self.config = config_class(**kwargs)
         self.execution_log = []  # Store all command executions for logging
 
+    @traceable(name="bash_execution")
     def execute(self, command: str, cwd: str = "", *, timeout: int | None = None):
         """Execute a command in the local environment and return the result as a dict."""
         import time

@@ -123,6 +123,45 @@ All benchmarks track:
 - **Agent messages**: Full conversation history
 - **Timing breakdown**: LLM vs. bash vs. overhead percentages
 
+## LangSmith tracing (optional)
+
+Mirrors the gpt-researcher setup: when `LANGCHAIN_API_KEY` is present, `benchmark_latency.py` flips `LANGCHAIN_TRACING_V2=true` and the `@traceable` decorators on the agent loop publish per-stage spans to [smith.langchain.com](https://smith.langchain.com).
+
+Setup:
+
+1. `pip install langsmith` (already in `Dockerfile`).
+2. Copy your key into the gitignored env file `mini-swe-agent/.env.langsmith`:
+
+   ```bash
+   LANGCHAIN_TRACING_V2=true
+   LANGCHAIN_API_KEY=ls__...
+   LANGCHAIN_PROJECT=mini-swe-agent
+   ```
+
+3. Host runs: export the variables (e.g. `set -a; source mini-swe-agent/.env.langsmith; set +a`) before `python benchmark_latency.py`.
+4. Docker runs: `scripts/run_benchmark_docker.sh` auto-mounts the file when present (override with `LANGSMITH_ENV_FILE=...`).
+
+Span hierarchy per task:
+
+| Span | Source |
+|------|--------|
+| `agent_run` | `DefaultAgent.run` |
+| `agent_step` | `DefaultAgent.step` (one per LLM round) |
+| `llm_api` (`run_type="llm"`) | `DefaultAgent.query` |
+| `vllm_query` (`run_type="llm"`) | `VLLMModel.query` (nested under `llm_api`) |
+| `bash_execution` | `LocalEnvironment.execute` |
+
+Span names align with the `usage_time_by_stage` keys already produced by `benchmark_latency.py` (`llm_api`, `bash_execution`, `agent_overhead`). Local JSON / `stats_log.csv` / resource-monitor output is unchanged and runs alongside LangSmith.
+
+After each benchmark run (when `LANGCHAIN_API_KEY` is set), traces are also exported locally under `benchmark_results/`:
+
+| File | Description |
+|------|-------------|
+| `{benchmark}_langsmith_trace_{timestamp}.csv` | Flattened spans: `name`, `run_type`, `latency_seconds`, `parent_run_id`, … |
+| `{benchmark}_langsmith_trace_{timestamp}.json` | Same data plus export metadata |
+
+Example: `benchmark_results/sorting_langsmith_trace_20260520_214500.csv`
+
  
 ## Acknowledgments
  

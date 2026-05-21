@@ -11,7 +11,7 @@
 #
 # Important environment overrides:
 #   TAVILY_API_KEY               required unless SKIP_WEB_SEARCH=1
-#   SKIP_WEB_SEARCH              1; set to 0 to require Tavily web search
+#   SKIP_WEB_SEARCH              0; set to 1 to use static URLs (no Tavily)
 #   BATCH_SIZE                   1
 #   RUN_ID                       UTC timestamp by default
 #   VERBOSE                      0; set to 1 for per-stage timing stats
@@ -21,7 +21,7 @@
 #   VLLM_DTYPE                   bfloat16
 #   VLLM_MAX_MODEL_LEN           8192
 #   VLLM_GPU_MEMORY_UTILIZATION  0.90
-#   VLLM_ENFORCE_EAGER           1
+#   VLLM_ENFORCE_EAGER           0; set to 1 to disable CUDA graphs (slower but easier to debug)
 #   VLLM_DISABLE_PREFIX_CACHING  1
 #   VLLM_EXTRA_ARGS              extra args appended to the vLLM command
 #   VLLM_HEALTH_BASE_URL         http://127.0.0.1:${VLLM_PORT}
@@ -81,7 +81,7 @@ VLLM_IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:latest}"
 VLLM_DTYPE="${VLLM_DTYPE:-bfloat16}"
 VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-8192}"
 VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.90}"
-VLLM_ENFORCE_EAGER="${VLLM_ENFORCE_EAGER:-1}"
+VLLM_ENFORCE_EAGER="${VLLM_ENFORCE_EAGER:-0}"
 VLLM_DISABLE_PREFIX_CACHING="${VLLM_DISABLE_PREFIX_CACHING:-1}"
 VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS:-}"
 VLLM_HEALTH_BASE_URL="${VLLM_HEALTH_BASE_URL:-http://127.0.0.1:${VLLM_PORT}}"
@@ -89,7 +89,16 @@ VLLM_WAIT_SECONDS="${VLLM_WAIT_SECONDS:-900}"
 START_VLLM_CONTAINER="${START_VLLM_CONTAINER:-1}"
 KEEP_CONTAINERS="${KEEP_CONTAINERS:-0}"
 
-SKIP_WEB_SEARCH="${SKIP_WEB_SEARCH:-1}"
+# Load Tavily key from gitignored env file when present (before SKIP_WEB_SEARCH default).
+TAVILY_ENV_FILE="${TAVILY_ENV_FILE-$LANGCHAIN_DIR/.env.tavily}"
+if [ -f "$TAVILY_ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$TAVILY_ENV_FILE"
+  set +a
+fi
+
+SKIP_WEB_SEARCH="${SKIP_WEB_SEARCH:-0}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
 JOB_ID="${JOB_ID:-1}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
@@ -117,7 +126,7 @@ fi
 
 if [ "$SKIP_WEB_SEARCH" != "1" ] && [ -z "${TAVILY_API_KEY:-}" ]; then
   echo "Error: TAVILY_API_KEY is required unless SKIP_WEB_SEARCH=1."
-  echo "Set it in the shell before running this script; it is forwarded to Docker at runtime only."
+  echo "Add it to langchain/.env.tavily or export TAVILY_API_KEY in your shell."
   exit 1
 fi
 
@@ -142,8 +151,20 @@ stop_monitor() {
   fi
 }
 
+save_vllm_logs() {
+  if [ "$START_VLLM_CONTAINER" != "1" ]; then
+    return 0
+  fi
+  local vllm_log_file="${RESULTS_DIR}/vllm.log"
+  if "${DOCKER_CMD[@]}" inspect "$VLLM_CONTAINER_NAME" >/dev/null 2>&1; then
+    echo "[info] Saving vLLM logs to: $vllm_log_file"
+    "${DOCKER_CMD[@]}" logs "$VLLM_CONTAINER_NAME" > "$vllm_log_file" 2>&1 || true
+  fi
+}
+
 cleanup() {
   stop_monitor
+  save_vllm_logs
   if [ "$KEEP_CONTAINERS" != "1" ]; then
     "${DOCKER_CMD[@]}" rm -f "$LANGCHAIN_CONTAINER_NAME" >/dev/null 2>&1 || true
     if [ "$START_VLLM_CONTAINER" = "1" ]; then
@@ -292,7 +313,10 @@ LANGCHAIN_DOCKER_ARGS=(
   --env "VLLM_PORT=$VLLM_PORT"
 )
 
-if [ -n "${TAVILY_API_KEY:-}" ]; then
+if [ -f "$TAVILY_ENV_FILE" ]; then
+  LANGCHAIN_DOCKER_ARGS+=(--env-file "$TAVILY_ENV_FILE")
+  echo "[info] Tavily env file mounted: $TAVILY_ENV_FILE"
+elif [ -n "${TAVILY_API_KEY:-}" ]; then
   LANGCHAIN_DOCKER_ARGS+=(--env TAVILY_API_KEY)
 fi
 if [ -n "${VLLM_MAX_TOKENS:-}" ]; then
@@ -300,6 +324,15 @@ if [ -n "${VLLM_MAX_TOKENS:-}" ]; then
 fi
 if [ -n "${VLLM_TEMPERATURE:-}" ]; then
   LANGCHAIN_DOCKER_ARGS+=(--env VLLM_TEMPERATURE)
+fi
+
+# Optional LangSmith tracing config. When the gitignored env file exists, mount
+# its variables into the container so the orchestrator publishes spans (mirrors
+# the gpt-researcher LANGCHAIN_TRACING_V2 / LANGCHAIN_API_KEY pattern).
+LANGSMITH_ENV_FILE="${LANGSMITH_ENV_FILE-$LANGCHAIN_DIR/.env.langsmith}"
+if [ -f "$LANGSMITH_ENV_FILE" ]; then
+  LANGCHAIN_DOCKER_ARGS+=(--env-file "$LANGSMITH_ENV_FILE")
+  echo "[info] LangSmith env file mounted: $LANGSMITH_ENV_FILE"
 fi
 
 LANGCHAIN_ARGS=(

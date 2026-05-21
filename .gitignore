@@ -49,6 +49,8 @@ outputs/
 # API keys and secrets
 .env
 .env.local
+.env.langsmith
+.env.tavily
 *.key
 secrets/
 credentials.json

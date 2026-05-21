@@ -213,11 +213,25 @@ wait_for_vllm
 
 echo "[info] Starting benchmark container."
 BENCH_EXIT=0
-"${DOCKER_CMD[@]}" run \
-  --name "$BENCH_CONTAINER_NAME" \
-  --network "$DOCKER_NETWORK_NAME" \
-  --add-host=host.docker.internal:host-gateway \
-  -v "$ROOT_DIR/benchmark_results:/app/benchmark_results" \
+
+BENCH_DOCKER_ARGS=(
+  run
+  --name "$BENCH_CONTAINER_NAME"
+  --network "$DOCKER_NETWORK_NAME"
+  --add-host=host.docker.internal:host-gateway
+  -v "$ROOT_DIR/benchmark_results:/app/benchmark_results"
+)
+
+# Optional LangSmith tracing config. When the gitignored env file exists, mount
+# its variables into the container so the agent publishes spans (mirrors the
+# gpt-researcher LANGCHAIN_TRACING_V2 / LANGCHAIN_API_KEY pattern).
+LANGSMITH_ENV_FILE="${LANGSMITH_ENV_FILE-$ROOT_DIR/.env.langsmith}"
+if [ -f "$LANGSMITH_ENV_FILE" ]; then
+  BENCH_DOCKER_ARGS+=(--env-file "$LANGSMITH_ENV_FILE")
+  echo "[info] LangSmith env file mounted: $LANGSMITH_ENV_FILE"
+fi
+
+"${DOCKER_CMD[@]}" "${BENCH_DOCKER_ARGS[@]}" \
   "$BENCH_IMAGE" \
   python benchmark_latency.py \
     --benchmark-type "$BENCHMARK_TYPE" \

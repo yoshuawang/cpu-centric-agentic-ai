@@ -194,6 +194,32 @@ nsys-ui output_profile.nsys-rep
 
 `stats_log.csv` includes per-container cgroup metrics plus host-wide GPU columns (`GPU_Util_Max`, `GPU_Mem_Used`, `GPU_Mem_Perc`). GPU values reflect the whole machine (dominated by vLLM), not per-container VRAM attribution.
 
+### LangSmith tracing (optional)
+
+Mirrors the gpt-researcher setup: when `LANGCHAIN_API_KEY` is present, the orchestrator flips `LANGCHAIN_TRACING_V2=true` and LangGraph publishes per-node spans to [smith.langchain.com](https://smith.langchain.com).
+
+Setup:
+
+1. Copy your key into the gitignored env file `langchain/.env.langsmith`:
+
+   ```bash
+   LANGCHAIN_TRACING_V2=true
+   LANGCHAIN_API_KEY=ls__...
+   LANGCHAIN_PROJECT=langchain-benchmark
+   ```
+
+2. Host runs: `source langchain/.env.langsmith && export $(grep -v '^#' langchain/.env.langsmith | cut -d= -f1)`, then run `orchestrator.py` as usual.
+3. Docker runs: `scripts/run_benchmark_docker.sh` auto-mounts the file when present (override with `LANGSMITH_ENV_FILE=...`).
+
+Spans you'll see per query:
+
+| Span | Source |
+|------|--------|
+| `web_search`, `fetch_url`, `summarize`, `final_answer` | LangGraph nodes (auto) |
+| `vllm_completion` (`run_type="llm"`) | `@traceable` on `_vllm_completion_non_stream_with_headers` |
+
+Local timing (`--verbose`, `--trace-output` JSON, NVTX, `stats_log.csv`) is unchanged and runs alongside LangSmith.
+
 ## Configuration
 
 - **URL fetch limit**: edit the `if len(texts) >= 2` guard in `orchestrator.py`.

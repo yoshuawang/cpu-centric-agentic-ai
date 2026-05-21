@@ -28,6 +28,7 @@ RUN python -m pip install --upgrade pip setuptools wheel && \
       langchain-core==0.3.79 \
       langchain-text-splitters==0.3.11 \
       langgraph==0.6.10 \
+      langsmith \
       matplotlib==3.9.4 \
       nltk==3.9.2 \
       numpy==2.0.2 \
@@ -37,5 +38,7 @@ RUN python -m pip install --upgrade pip setuptools wheel && \
       requests==2.32.5 \
       sumy==0.11.0 \
       tavily-python
+
+RUN python -m nltk.downloader -d /app/nltk_data punkt_tab
 
 CMD ["python", "orchestrator.py", "--help"]

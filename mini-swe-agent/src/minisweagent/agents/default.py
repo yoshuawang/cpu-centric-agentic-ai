@@ -9,6 +9,18 @@ from jinja2 import StrictUndefined, Template
 
 from minisweagent import Environment, Model
 
+try:
+    from langsmith import traceable  # type: ignore
+except ImportError:  # langsmith not installed: provide a no-op decorator
+    def traceable(*dargs, **dkwargs):  # type: ignore[no-redef]
+        if dargs and callable(dargs[0]) and not dkwargs:
+            return dargs[0]
+
+        def _decorator(fn):
+            return fn
+
+        return _decorator
+
 
 @dataclass
 class AgentConfig:
@@ -70,6 +82,7 @@ class DefaultAgent:
     def add_message(self, role: str, content: str, **kwargs):
         self.messages.append({"role": role, "content": content, **kwargs})
 
+    @traceable(name="agent_run")
     def run(self, task: str, **kwargs) -> tuple[str, str]:
         """Run step() until agent is finished. Return exit status & message"""
         self.extra_template_vars |= {"task": task, **kwargs}
@@ -85,10 +98,12 @@ class DefaultAgent:
                 self.add_message("user", str(e))
                 return type(e).__name__, str(e)
 
+    @traceable(name="agent_step")
     def step(self) -> dict:
         """Query the LM, execute the action, return the observation."""
         return self.get_observation(self.query())
 
+    @traceable(run_type="llm", name="llm_api")
     def query(self) -> dict:
         """Query the model and return the response."""
         if 0 < self.config.step_limit <= self.model.n_calls or 0 < self.config.cost_limit <= self.model.cost:
