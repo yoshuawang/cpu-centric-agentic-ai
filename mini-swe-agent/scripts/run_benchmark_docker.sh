@@ -134,6 +134,7 @@ wait_for_vllm() {
 }
 
 mkdir -p "$ROOT_DIR/benchmark_results"
+mkdir -p "$ROOT_DIR/outputs"
 
 echo "[info] Benchmark type        : $BENCHMARK_TYPE"
 echo "[info] Model path            : $MODEL_PATH"
@@ -220,6 +221,7 @@ BENCH_DOCKER_ARGS=(
   --network "$DOCKER_NETWORK_NAME"
   --add-host=host.docker.internal:host-gateway
   -v "$ROOT_DIR/benchmark_results:/app/benchmark_results"
+  -v "$ROOT_DIR/outputs:/app/outputs"
 )
 
 # Optional LangSmith tracing config. When the gitignored env file exists, mount

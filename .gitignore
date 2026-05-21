@@ -32,6 +32,8 @@ huggingface/
 # Data files
 *.csv
 !mini-swe-agent/stats_log.csv
+!langchain/stats_log.csv
+!langchain/outputs/freshQA_langsmith_stats.csv
 *.json
 *.jsonl
 *.parquet
@@ -44,6 +46,9 @@ huggingface/
 results/
 logs/
 outputs/
+!langchain/outputs/
+!langchain/outputs/resource_timeline_cropped.png
+!langchain/outputs/freshQA_langsmith_stats.csv
 *.log
 
 # API keys and secrets

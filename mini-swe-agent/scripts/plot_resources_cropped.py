@@ -72,9 +72,9 @@ def main():
     if langsmith_files:
         try:
             ls_df = pd.read_csv(langsmith_files[0])
-            ls_df['Start Time'] = pd.to_datetime(ls_df['Start Time'])
-            ls_df['End Time'] = pd.to_datetime(ls_df['End Time'])
-            
+            ls_df['Start Time'] = pd.to_datetime(ls_df['Start Time'], utc=True)
+            ls_df['End Time'] = pd.to_datetime(ls_df['End Time'], utc=True)
+
             local_tz = datetime.datetime.now().astimezone().tzinfo
             ls_df['Start Time'] = ls_df['Start Time'].dt.tz_convert(local_tz).dt.tz_localize(None)
             ls_df['End Time'] = ls_df['End Time'].dt.tz_convert(local_tz).dt.tz_localize(None)

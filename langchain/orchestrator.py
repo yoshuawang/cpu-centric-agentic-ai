@@ -21,6 +21,9 @@ from langgraph.graph import StateGraph
 from langchain_core.runnables.config import RunnableConfig
 import sys
 import argparse
+from datetime import datetime, timezone
+from pathlib import Path
+from langsmith_export import export_langsmith_traces
  
 import time
 from collections import defaultdict
@@ -506,7 +509,6 @@ if __name__ == '__main__':
     job_id = args.job_id
 
     if args.query_file:
-        from pathlib import Path
         queries = [line.strip() for line in Path(args.query_file).read_text().splitlines() if line.strip()]
         if batch_size > len(queries):
             print(f"Warning: batch_size ({batch_size}) > available questions ({len(queries)}), capping to {len(queries)}")
@@ -526,6 +528,7 @@ if __name__ == '__main__':
  
  
     initial_states = [
+        
         {'query': q, 'urls': [], 'page_texts': [], 'summaries': [], 'final_response': '', 'job_id': job_id, 'skip_web_search': args.skip_web_search}
         for q in queries[0:batch_size]
     ]
@@ -534,6 +537,7 @@ if __name__ == '__main__':
  
  
     nvtx.push_range('batch_run_all_queries')
+    run_started_at = datetime.now(timezone.utc)
     start_time = timeit.default_timer()
  
     print(f"\n{'='*70}")
@@ -552,8 +556,6 @@ if __name__ == '__main__':
         print_timing_statistics()
  
     if args.trace_output:
-        from pathlib import Path
-        from datetime import datetime, timezone
         for i, trace in enumerate(query_traces):
             if i < len(result_states):
                 trace['query'] = result_states[i].get('query', '')
@@ -572,5 +574,10 @@ if __name__ == '__main__':
         }
         Path(args.trace_output).write_text(json.dumps(trace_data, indent=2))
         print(f"Traces written to {args.trace_output} ({len(query_traces)} queries)")
- 
- 
+
+    export_langsmith_traces(
+        Path(__file__).parent / "benchmark_results",
+        args.benchmark,
+        run_started_at,
+    )
+

@@ -211,6 +211,7 @@ wait_for_vllm() {
 }
 
 mkdir -p "$RESULTS_DIR"
+mkdir -p "$LANGCHAIN_DIR/outputs"
 
 echo "[info] Benchmark type        : $BENCHMARK"
 echo "[info] Batch size            : $BATCH_SIZE"
@@ -301,6 +302,7 @@ LANGCHAIN_DOCKER_ARGS=(
   --network "$DOCKER_NETWORK_NAME"
   --add-host=host.docker.internal:host-gateway
   -v "$RESULTS_DIR:/app/benchmark_results"
+  -v "$LANGCHAIN_DIR/outputs:/app/outputs"
   --env "VLLM_OPENAI_BASE_URL=$BASE_URL"
   --env "VLLM_MODEL=$MODEL_PATH"
   --env "LANGCHAIN_RUN_ID=$RUN_ID"
